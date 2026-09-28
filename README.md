@@ -32,13 +32,21 @@ On first launch the settings dialog opens: paste your M3U URL and press **Save &
 ```sh
 npm run autostart:install     # register a logon task and start the server now
 npm run autostart:status      # is it running? shows the last log lines
-npm run autostart:restart     # restart it, e.g. after pulling code changes
+npm run autostart:restart     # restart it, e.g. after updating (see below)
 npm run autostart:uninstall   # stop it and remove the logon task
 ```
 
 The server runs as a scheduled task named `ipman`, with no window at all. It uses `conhost --headless`, because on Windows 11 a "hidden" PowerShell window still shows up in Windows Terminal, and closing that window would stop the server. You can close the terminal you ran the command in.
 
-The log is written to `.cache/server.log`. Every restart rebuilds the app, so after `git pull`, run `autostart:restart` to pick up the changes.
+The log is written to `.cache/server.log`.
+
+### Updating
+
+```sh
+git pull
+npm install                   # only needed when dependencies changed, but harmless every time
+npm run autostart:restart     # rebuilds the app and restarts the server
+```
 
 ### Development
 
