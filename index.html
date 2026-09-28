@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- Many logo hosts reject hotlinked requests that carry a Referer. -->
+    <meta name="referrer" content="no-referrer" />
+    <title>ipman</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📺</text></svg>" />
+  </head>
+  <body>
+    <div id="app" class="app">
+      <aside class="sidebar">
+        <div class="sidebar-header">
+          <h1 class="brand">ipman</h1>
+          <div class="header-actions">
+            <button id="settings-btn" class="icon-btn" title="Settings" aria-label="Settings">⚙</button>
+            <button id="collapse-btn" class="icon-btn" title="Hide channel list" aria-label="Hide channel list">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7" /></svg>
+            </button>
+          </div>
+        </div>
+        <div class="filters">
+          <div class="filter-row">
+            <select id="country-select" aria-label="Country"></select>
+            <select id="category-select" aria-label="Category"></select>
+          </div>
+          <input id="search" type="search" placeholder="Search channels   /" autocomplete="off" aria-label="Search channels" />
+        </div>
+        <div id="channel-count" class="channel-count"></div>
+        <div id="channel-list" class="channel-list" role="listbox" aria-label="Channels"></div>
+        <div class="shortcuts">↑↓ zap · F fullscreen · M mute · S favorite · / search</div>
+      </aside>
+
+      <main class="stage">
+        <button id="expand-btn" class="icon-btn expand-btn" title="Show channel list" aria-label="Show channel list" hidden>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5l7 7-7 7" /></svg>
+        </button>
+        <div id="player-wrap" class="player-wrap">
+          <video id="video" controls playsinline></video>
+          <div id="overlay" class="overlay" hidden></div>
+        </div>
+        <div class="now-playing">
+          <img id="np-logo" class="logo" alt="" hidden />
+          <div class="np-text">
+            <div id="np-name" class="np-name">No channel selected</div>
+            <div id="np-group" class="np-group"></div>
+            <div id="np-epg" class="np-epg" hidden></div>
+          </div>
+          <span id="np-status" class="np-status"></span>
+          <button id="np-fav" class="star" title="Favorite (S)" aria-label="Toggle favorite" hidden>☆</button>
+        </div>
+      </main>
+    </div>
+
+    <dialog id="settings-dialog">
+      <form method="dialog">
+        <h2>Settings</h2>
+        <label>
+          Playlist URL (M3U)
+          <input id="playlist-url" type="url" required placeholder="https://provider.example/get.php?…&type=m3u_plus" />
+        </label>
+        <label>
+          <span>TV guide URL (XMLTV) <span class="muted">optional</span></span>
+          <input id="epg-url" type="url" placeholder="Auto: from the playlist, or the provider's xmltv.php" />
+        </label>
+        <label class="check">
+          <input id="use-proxy" type="checkbox" />
+          <span>Route playlist and streams through the local proxy <span class="muted">(fixes CORS and http-on-https blocking; needs <code>npm run dev</code> or <code>npm run preview</code>)</span></span>
+        </label>
+        <p id="settings-info" class="muted"></p>
+        <div class="actions">
+          <button value="cancel" formnovalidate>Cancel</button>
+          <button value="save" class="primary">Save &amp; reload playlist</button>
+        </div>
+      </form>
+    </dialog>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
