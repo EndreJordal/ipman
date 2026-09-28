@@ -44,6 +44,7 @@ const els = {
   npGroup: byId<HTMLDivElement>('np-group'),
   npEpg: byId<HTMLDivElement>('np-epg'),
   npStatus: byId<HTMLSpanElement>('np-status'),
+  npResolution: byId<HTMLSpanElement>('np-resolution'),
   npFav: byId<HTMLButtonElement>('np-fav'),
   dialog: byId<HTMLDialogElement>('settings-dialog'),
   urlInput: byId<HTMLInputElement>('playlist-url'),
@@ -493,6 +494,27 @@ const savedVolume = store.getVolume();
 els.video.volume = savedVolume.volume;
 els.video.muted = savedVolume.muted;
 els.video.addEventListener('volumechange', () => store.setVolume(els.video.volume, els.video.muted));
+
+/** Resolution tiers by decoded height. Ranges, not exact values: channels often send e.g. 1088 or 576 lines. */
+function resolutionTier(height: number): { label: string; tier: string } {
+  if (height >= 2000) return { label: '2160p', tier: 'uhd' };
+  if (height >= 1000) return { label: '1080p', tier: 'fhd' };
+  if (height >= 700) return { label: '720p', tier: 'hd' };
+  return { label: `${height}p`, tier: 'sd' };
+}
+
+// `resize` fires when the first frame is decoded and whenever HLS switches quality level.
+function updateResolution(): void {
+  const { videoWidth, videoHeight } = els.video;
+  els.npResolution.hidden = !videoHeight;
+  if (!videoHeight) return;
+  const { label, tier } = resolutionTier(videoHeight);
+  els.npResolution.textContent = label;
+  els.npResolution.dataset.tier = tier;
+  els.npResolution.title = `${videoWidth} × ${videoHeight}`;
+}
+els.video.addEventListener('resize', updateResolution);
+els.video.addEventListener('emptied', updateResolution); // Channel switch or stop: hide until the new stream decodes.
 
 document.addEventListener('keydown', (event) => {
   if (els.dialog.open || event.ctrlKey || event.metaKey || event.altKey) return;

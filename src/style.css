@@ -428,6 +428,36 @@ dialog input[type='url']:focus {
   white-space: nowrap;
 }
 
+.res-pill {
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  white-space: nowrap;
+  cursor: default;
+}
+
+.res-pill[data-tier='sd'] {
+  background: #4b5260;
+  color: #e6e8eb;
+}
+
+.res-pill[data-tier='hd'] {
+  background: #e6e8eb;
+  color: #0f1115;
+}
+
+.res-pill[data-tier='fhd'] {
+  background: var(--star);
+  color: #0f1115;
+}
+
+.res-pill[data-tier='uhd'] {
+  background: #e5484d;
+  color: #fff;
+}
+
 .np-status[data-state='playing'] {
   color: var(--live);
 }
