@@ -147,6 +147,7 @@ function cueText(codec: string, payload: Uint8Array): string {
 }
 
 export class MkvTap {
+  private store: Store;
   private buf: Buffer = Buffer.alloc(0);
   /** Absolute file offset of buf[0]. */
   private offset: number;
@@ -159,10 +160,9 @@ export class MkvTap {
   private pending: { track: MkvSubtitleTrack; start: number; text: string; duration?: number } | null = null;
   private failed = false;
 
-  constructor(
-    private store: Store,
-    startOffset: number,
-  ) {
+  // No constructor parameter properties in server code: Node runs it with type stripping only.
+  constructor(store: Store, startOffset: number) {
+    this.store = store;
     this.offset = startOffset;
     this.syncing = startOffset > 0;
   }
@@ -403,7 +403,7 @@ function handle(req: IncomingMessage, res: ServerResponse): void {
       duration: store?.duration ?? null,
       audioCodec: store?.audioCodec ?? null,
       // Where the converted stream requested with this start really begins (null until known).
-      transcodeStart: (start !== null && store?.transcodeStarts.get(start)) ?? null,
+      transcodeStart: start === null ? null : (store?.transcodeStarts.get(start) ?? null),
       tracks: store?.tracks ?? [],
       cues: store?.cues.slice(cursor) ?? [],
       cursor: store?.cues.length ?? 0,

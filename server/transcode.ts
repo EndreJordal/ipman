@@ -42,7 +42,11 @@ class FirstTimestampFinder {
   private scanned = 0;
   private done = false;
 
-  constructor(private onFound: (seconds: number) => void) {}
+  private onFound: (seconds: number) => void;
+
+  constructor(onFound: (seconds: number) => void) {
+    this.onFound = onFound;
+  }
 
   push(chunk: Buffer): void {
     if (this.done) return;

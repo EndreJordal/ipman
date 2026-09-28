@@ -19,10 +19,10 @@
   },
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit && vite build",
+    "build": "tsc --noEmit && tsc --noEmit -p tsconfig.server.json && vite build",
     "start": "vite build --logLevel warn && node server/index.ts",
     "preview": "vite preview",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.server.json",
     "autostart:install": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/autostart.ps1 install",
     "autostart:uninstall": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/autostart.ps1 uninstall",
     "autostart:restart": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/autostart.ps1 restart",

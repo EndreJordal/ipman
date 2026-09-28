@@ -1,0 +1,10 @@
+{
+  // The standalone server runs its .ts files directly with Node's type stripping, which only
+  // removes type annotations. This check rejects syntax it can't strip (parameter properties,
+  // enums, namespaces) in server code and the shared modules it imports.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "erasableSyntaxOnly": true
+  },
+  "include": ["server", "src/lib/proxy.ts", "src/lib/epg.ts"]
+}
