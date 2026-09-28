@@ -59,10 +59,11 @@ function Start-Server {
 switch ($Action) {
   'install' {
     New-Item -ItemType Directory -Force $LogDir | Out-Null
-    # A hidden PowerShell window runs npm; cmd handles the redirect so the log stays plain UTF-8 text.
-    $command = "Set-Location -LiteralPath '$Root'; cmd /c 'npm start > .cache\server.log 2>&1'"
-    $taskAction = New-ScheduledTaskAction -Execute 'powershell.exe' `
-      -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -Command `"$command`""
+    # conhost --headless gives npm a console without any window. `powershell -WindowStyle Hidden`
+    # is not enough on Windows 11: when Windows Terminal is the default terminal it opens a
+    # visible window anyway, and closing that window kills the server.
+    $command = "cd /d `"$Root`" && npm start > .cache\server.log 2>&1"
+    $taskAction = New-ScheduledTaskAction -Execute 'conhost.exe' -Argument "--headless cmd.exe /d /c `"$command`""
     $trigger = New-ScheduledTaskTrigger -AtLogOn -User $User
     $settings = New-ScheduledTaskSettingsSet `
       -ExecutionTimeLimit ([TimeSpan]::Zero) `

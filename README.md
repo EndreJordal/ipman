@@ -2,12 +2,26 @@
 
 A personal IPTV viewer for M3U playlists. Built with Vite and TypeScript, using hls.js and mpegts.js for playback.
 
-## Run
+## Requirements
+
+- [Node.js](https://nodejs.org/) **24 or newer**. The server runs its TypeScript files directly, which older versions can't do. Check with `node -v`.
+- Git, to clone the repo.
+- Windows, for the optional autostart below. The app itself runs anywhere Node does.
+
+## Install and run
 
 ```sh
+git clone https://github.com/EndreJordal/ipman.git
+cd ipman
 npm install
 npm start          # builds, then serves the app at http://127.0.0.1:5173
 ```
+
+> **Windows PowerShell:** if `npm` fails with *"running scripts is disabled on this system"*, either use `npm.cmd` instead of `npm` (e.g. `npm.cmd start`), or allow local scripts for your user once:
+>
+> ```powershell
+> Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+> ```
 
 On first launch the settings dialog opens: paste your M3U URL and press **Save & reload playlist**.
 
@@ -22,7 +36,9 @@ npm run autostart:restart     # restart it, e.g. after pulling code changes
 npm run autostart:uninstall   # stop it and remove the logon task
 ```
 
-The server runs hidden in the background as a scheduled task named `ipman`. Its log is written to `.cache/server.log`. Every restart rebuilds the app, so code changes are picked up with `autostart:restart`.
+The server runs as a scheduled task named `ipman`, with no window at all. It uses `conhost --headless`, because on Windows 11 a "hidden" PowerShell window still shows up in Windows Terminal, and closing that window would stop the server. You can close the terminal you ran the command in.
+
+The log is written to `.cache/server.log`. Every restart rebuilds the app, so after `git pull`, run `autostart:restart` to pick up the changes.
 
 ### Development
 
