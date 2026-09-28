@@ -10,6 +10,7 @@ import { Readable } from 'node:stream';
 import type { ReadableStream as NodeReadableStream } from 'node:stream/web';
 import type { Plugin } from 'vite';
 import { PROXY_PATH, proxyUrl } from '../src/lib/proxy.ts';
+import { tapForResponse } from './mkv-subtitles.ts';
 
 /** Time allowed for the upstream to send response headers. Bodies (live streams) may run forever. */
 const HEADERS_TIMEOUT_MS = 15_000;
@@ -108,6 +109,9 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   }
   const body = Readable.fromWeb(upstream.body as unknown as NodeReadableStream);
   body.on('error', () => res.destroy());
+  // MKV movies: read their text subtitles from the bytes on their way to the browser.
+  const tap = tapForResponse(target.href, upstream.headers.get('content-type') ?? '', upstream.headers.get('content-range'));
+  if (tap) body.on('data', (chunk: Buffer) => tap.write(chunk));
   body.pipe(res);
 }
 

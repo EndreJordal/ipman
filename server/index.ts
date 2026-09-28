@@ -8,6 +8,8 @@ import http, { type IncomingMessage, type ServerResponse } from 'node:http';
 import path from 'node:path';
 import { epgMiddleware } from './epg.ts';
 import { proxyMiddleware } from './proxy.ts';
+import { vodInfoMiddleware } from './mkv-subtitles.ts';
+import { transcodeMiddleware } from './transcode.ts';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
 process.chdir(ROOT); // The guide cache in .cache/ is relative to the project root.
@@ -64,9 +66,13 @@ if (!existsSync(path.join(DIST, 'index.html'))) {
 
 const server = http.createServer((req, res) => {
   proxyMiddleware(req, res, () =>
-    epgMiddleware(req, res, () => {
-      serveStatic(req, res).catch((err: Error) => sendStatus(res, 500, err.message));
-    }),
+    epgMiddleware(req, res, () =>
+      transcodeMiddleware(req, res, () =>
+        vodInfoMiddleware(req, res, () => {
+          serveStatic(req, res).catch((err: Error) => sendStatus(res, 500, err.message));
+        }),
+      ),
+    ),
   );
 });
 

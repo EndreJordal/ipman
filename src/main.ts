@@ -12,7 +12,11 @@ import { parseM3U, splitGroup, type Channel, type Playlist } from './lib/m3u';
 import { proxyUrl } from './lib/proxy';
 import { Player, type PlayerStatus } from './player';
 import { store } from './store';
+import { BitmapSubtitles } from './bitmap-subtitles';
+import { PlayerControls } from './controls';
+import { SubtitleMenu } from './subtitles';
 import { VirtualList } from './virtual-list';
+import { VodSubtitles } from './vod-subtitles';
 
 const ROW_HEIGHT = 48;
 const ALL = '__all__';
@@ -68,8 +72,11 @@ let groupParts = new Map<string, { country: string; category: string }>();
 let categoriesByCountry = new Map<string, Set<string>>();
 let guideLoading = false;
 
-const player = new Player(els.video, showStatus);
+const bitmapSubtitles = new BitmapSubtitles(els.video, byId<HTMLCanvasElement>('subtitle-canvas'));
+const player = new Player(els.video, showStatus, bitmapSubtitles, new VodSubtitles(els.video));
 const list = new VirtualList<Channel>(els.list, ROW_HEIGHT, renderRow);
+const controls = new PlayerControls(els.playerWrap, els.video, () => current && tune(current), () => player.timeline());
+new SubtitleMenu(els.video, byId<HTMLButtonElement>('subtitle-btn'), byId<HTMLDivElement>('subtitle-menu'), bitmapSubtitles);
 
 // ---------- Channel list ----------
 
@@ -268,7 +275,9 @@ function populateFilters(): void {
     [
       [ALL, hasCategories ? 'All countries' : 'All channels'],
       [FAVORITES, '★ Favorites'],
-      ...[...categoriesByCountry.keys()].map((c): [string, string] => [c, c]),
+      ...[...categoriesByCountry.keys()]
+        .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }))
+        .map((c): [string, string] => [c, c]),
     ],
     saved?.country,
   );
@@ -343,7 +352,8 @@ function showStatus(status: PlayerStatus): void {
   const label: Record<PlayerStatus['state'], string> = {
     idle: '',
     loading: 'Loading',
-    playing: '● Live',
+    // Movies and series have a finite duration; only live streams are "Live".
+    playing: controls.isVod ? '▶ Playing' : '● Live',
     blocked: 'Paused',
     error: 'Error',
   };
@@ -352,11 +362,6 @@ function showStatus(status: PlayerStatus): void {
   els.overlay.textContent = overlayText[status.state];
   els.npStatus.textContent = label[status.state];
   els.npStatus.dataset.state = status.state;
-}
-
-function toggleFullscreen(): void {
-  if (document.fullscreenElement) void document.exitFullscreen();
-  else void els.playerWrap.requestFullscreen();
 }
 
 // ---------- Playlist loading ----------
@@ -519,12 +524,19 @@ els.video.addEventListener('emptied', updateResolution); // Channel switch or st
 document.addEventListener('keydown', (event) => {
   if (els.dialog.open || event.ctrlKey || event.metaKey || event.altKey) return;
   const target = event.target as HTMLElement;
+  if (target.closest('.ctl-menu')) return; // Arrow keys move through the menu there.
   if (target instanceof HTMLInputElement || target instanceof HTMLSelectElement) {
     if (event.key === 'Escape') target.blur();
     return;
   }
 
   switch (event.key) {
+    case 'ArrowLeft':
+      if (!controls.seekBy(-10)) return;
+      break;
+    case 'ArrowRight':
+      if (!controls.seekBy(10)) return;
+      break;
     case 'ArrowUp':
     case 'PageUp':
       zap(-1);
@@ -535,7 +547,13 @@ document.addEventListener('keydown', (event) => {
       break;
     case 'f':
     case 'F':
-      toggleFullscreen();
+      controls.toggleFullscreen();
+      break;
+    case ' ':
+    case 'k':
+    case 'K':
+      if (target instanceof HTMLButtonElement) return; // Space on a focused button presses it.
+      controls.togglePlay();
       break;
     case 'm':
     case 'M':
