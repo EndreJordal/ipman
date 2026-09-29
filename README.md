@@ -167,3 +167,7 @@ The app shows the current programme under each channel name, and the current and
   - Neither are bitmap subtitles in movies (PGS, VobSub).
   - DVB subtitles appear from the next broadcast line after you choose a language.
 - UDP multicast (`udp://…`) and DRM-protected streams can't be played in a browser.
+
+## Licence
+
+[MIT](LICENSE). ipman downloads [Node.js](https://nodejs.org/) (MIT) and [ffmpeg](https://www.gyan.dev/ffmpeg/builds/) (GPL) from their official sources at install time; they keep their own licences.

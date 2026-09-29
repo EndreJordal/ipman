@@ -78,10 +78,18 @@ param(
   $PortArgs = ''
   if ($Port -ne 5173) { $PortArgs = " --port $Port" }
 
+  # The same folder can be written in long form (C:\Users\longname) or short 8.3 form
+  # (C:\Users\LONGNA~1), and which one a path ends up in depends on whether the folder existed
+  # when it was normalized. Compare paths only after normalizing both sides, when both exist.
+  function Test-SamePath([string]$A, [string]$B) {
+    if (-not $A -or -not $B) { return $false }
+    try { return [IO.Path]::GetFullPath($A) -eq [IO.Path]::GetFullPath($B) } catch { return $false }
+  }
+
   function Stop-Ipman {
     # This install's server: node.exe from the install folder.
     Get-CimInstance Win32_Process -Filter "Name = 'node.exe'" |
-      Where-Object { $_.ExecutablePath -and $_.ExecutablePath -eq $NodeExe } |
+      Where-Object { Test-SamePath $_.ExecutablePath $NodeExe } |
       ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
   }
 

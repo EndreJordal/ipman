@@ -33,7 +33,10 @@ Check 'server answers with the packaged version' ($version -eq $expected) "(got 
 
 $conn = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
 $exe = if ($conn) { (Get-CimInstance Win32_Process -Filter "ProcessId = $($conn.OwningProcess)").ExecutablePath } else { '' }
-Check "server runs on the installer's own node.exe" ($exe -eq (Join-Path $installDir 'node\node.exe')) "(runs from '$exe')"
+# Normalize both sides: Windows may report the path in long form while $env:TEMP is in short 8.3
+# form (C:\Users\RUNNER~1 on GitHub's machines). GetFullPath expands short names of existing folders.
+$ownNode = [IO.Path]::GetFullPath((Join-Path $installDir 'node\node.exe'))
+Check "server runs on the installer's own node.exe" ($exe -and [IO.Path]::GetFullPath($exe) -eq $ownNode) "(runs from '$exe')"
 $page = try { (Invoke-WebRequest "http://127.0.0.1:$Port/" -UseBasicParsing -TimeoutSec 5).StatusCode } catch { 0 }
 Check 'frontend is served' ($page -eq 200)
 Check 'ffmpeg installed next to it' (Test-Path (Join-Path $installDir 'ffmpeg\ffmpeg.exe'))
