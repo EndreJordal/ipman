@@ -21,6 +21,9 @@ The installer asks one question, whether ipman should start when you log in, and
 
 On first launch the settings dialog opens: paste your M3U URL and press **Save & reload playlist**.
 
+> **Bookmark http://127.0.0.1:5173/** (Ctrl+D) to find ipman again, or open it from the Start menu: **ipman**.
+> Always use exactly this address: your settings and favorites are stored in the browser for it.
+
 **Want to read the installer before running it?** It's [install.ps1](install.ps1) in this repository. You can also download it, read it, and run it yourself:
 
 ```powershell

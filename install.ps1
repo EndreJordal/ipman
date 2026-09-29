@@ -327,7 +327,13 @@ param(
   if ($running) {
     Write-Host ''
     Write-Host "Done. ipman $running is running at $Url" -ForegroundColor Green
-    Say 'It opened in your browser. Next time, use the Start menu entry "ipman".'
+    if (-not $NoBrowser) { Say 'It is opening in your browser.' }
+    Write-Host ''
+    Write-Host "  Bookmark $Url in your browser (Ctrl+D) to find ipman again." -ForegroundColor Yellow
+    Say 'Or open it from the Start menu: "ipman".'
+    Say 'Always use this exact address: your settings and favorites are stored for it.'
+    Write-Host ''
+    Write-Host '  You can safely close this window now: ipman keeps running without it.' -ForegroundColor Green
   } else {
     Write-Host ''
     Write-Host 'ipman was installed, but did not start.' -ForegroundColor Yellow
