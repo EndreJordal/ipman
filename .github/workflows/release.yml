@@ -1,0 +1,41 @@
+# Publishing a version: bump "version" in package.json, commit, then
+#   git tag v0.2.0 && git push origin v0.2.0
+# This builds and tests the package and creates the GitHub Release the installer downloads from
+# (ipman.zip, ipman.zip.sha256, install.ps1).
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - name: Tag must match package.json
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          if ("v$version" -ne $env:GITHUB_REF_NAME) { throw "Tag $env:GITHUB_REF_NAME does not match package.json version $version" }
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run package
+      - name: Installer smoke test
+        shell: powershell
+        run: .\tests\install-smoke.ps1
+      - name: Publish the release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release create $env:GITHUB_REF_NAME
+          build/release/ipman.zip build/release/ipman.zip.sha256 build/release/install.ps1
+          --title "ipman $env:GITHUB_REF_NAME" --generate-notes

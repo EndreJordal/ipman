@@ -802,3 +802,104 @@ dialog code {
     display: none;
   }
 }
+
+/* ---------- Version and updates (settings dialog) ---------- */
+
+.about {
+  margin: 4px 0 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.about-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+dialog label.check.inline {
+  margin: 0;
+  align-items: center;
+  font-size: 12px;
+}
+
+.update-notice {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  background: var(--accent-soft);
+}
+
+.update-notice[hidden],
+.command-row[hidden],
+#release-link[hidden] {
+  display: none;
+}
+
+.update-notice p {
+  margin: 6px 0;
+  font-size: 12px;
+}
+
+.command-row {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+}
+
+.command-row code {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 8px;
+  border-radius: 5px;
+  background: var(--bg);
+  font-size: 11px;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+
+.command-row button,
+.link-button {
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--panel-2);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.update-actions {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 8px;
+  font-size: 12px;
+}
+
+.update-actions a {
+  color: var(--accent);
+}
+
+.link-button {
+  border: none;
+  background: none;
+  color: var(--muted);
+  text-decoration: underline;
+}
+
+/* A dot on the gear when an update is available. */
+#settings-btn {
+  position: relative;
+}
+
+#settings-btn.has-update::after {
+  content: '';
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+}

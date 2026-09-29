@@ -1,63 +1,95 @@
 # ipman
 
-A personal IPTV viewer for M3U playlists. Built with Vite and TypeScript, using hls.js and mpegts.js for playback.
+A personal IPTV viewer for M3U playlists, running in your browser. It plays live channels and movies from your own IPTV subscription, with a TV guide, subtitles, and automatic conversion of Dolby audio that browsers can't play.
 
-## Requirements
+> **ipman is a player only.** It comes with no channels, playlists or other content. You need your own IPTV subscription and its M3U playlist URL.
 
-- [Node.js](https://nodejs.org/) **24 or newer**. The server runs its TypeScript files directly, which older versions can't do. Check with `node -v`.
-- Git, to clone the repo.
-- Windows, for the optional autostart below. The app itself runs anywhere Node does.
-- Recommended: [ffmpeg](https://ffmpeg.org/), for channels and movies with Dolby or DTS audio (AC-3, E-AC-3, DTS, TrueHD), which browsers can't play. With ffmpeg installed, ipman converts their audio to AAC automatically. Without it, such channels show an error and such movies play without sound. On Windows: `winget install --id Gyan.FFmpeg -e`.
+## Install (Windows 10 and 11)
 
-## Install and run
+Open **PowerShell** (Start menu → type "PowerShell") and paste:
+
+```powershell
+irm https://github.com/EndreJordal/ipman/releases/latest/download/install.ps1 | iex
+```
+
+The installer asks one question, whether ipman should start when you log in, and then:
+
+- **Downloads ipman** from this repository's releases, **Node.js** from nodejs.org and **ffmpeg** from gyan.dev. Every download is checked against its published SHA-256 checksum; if one doesn't match, nothing is changed.
+- **Installs** into `%LOCALAPPDATA%\Programs\ipman`, for your user only. It needs no admin rights, and adds nothing to the PATH or system-wide. Node.js and ffmpeg are private copies that don't interfere with anything else.
+- **Adds** a Start-menu entry "ipman" and an entry under Settings → Apps → Installed apps, plus the autostart if you chose it.
+- **Starts ipman** and opens it in your browser at http://127.0.0.1:5173.
+
+On first launch the settings dialog opens: paste your M3U URL and press **Save & reload playlist**.
+
+**Want to read the installer before running it?** It's [install.ps1](install.ps1) in this repository. You can also download it, read it, and run it yourself:
+
+```powershell
+irm https://github.com/EndreJordal/ipman/releases/latest/download/install.ps1 -OutFile install-ipman.ps1
+notepad install-ipman.ps1
+powershell -ExecutionPolicy Bypass -File install-ipman.ps1
+```
+
+**Installer options**, for example to skip the question:
+
+```powershell
+& ([scriptblock]::Create((irm https://github.com/EndreJordal/ipman/releases/latest/download/install.ps1))) -NoAutostart
+```
+
+| Option | Effect |
+| --- | --- |
+| `-Autostart` / `-NoAutostart` | Answer "start when you log in?" in advance |
+| `-NoBrowser` | Don't open the browser after installing |
+| `-Uninstall` | Remove ipman |
+| `-Path <folder>` | Install somewhere else |
+
+### Updating
+
+When a new version is out, ipman shows a dot on the settings gear, and the settings dialog shows the command to copy. It's the same install command: **running it again updates ipman in place**. Settings and favorites are stored in your browser and are kept.
+
+You can switch off the update check under Settings → *Check for updates*. The check contacts GitHub at most twice a day and sends nothing but a normal web request.
+
+### Uninstalling
+
+Settings → Apps → Installed apps → **ipman** → Uninstall. Or run the install command with `-Uninstall`. This removes the program, its shortcuts, the autostart and its cache. Settings and favorites stay in your browser until you clear the site data for `127.0.0.1`.
+
+### Troubleshooting
+
+- **"running scripts is disabled on this system":** this doesn't apply to the `irm … | iex` command above. It only affects running a downloaded `.ps1` file directly. Use the `-ExecutionPolicy Bypass` form shown above.
+- **"Port 5173 is in use by …":** another program uses ipman's port. Close it and run the installer again.
+- **Smart App Control or antivirus blocks something:** everything ipman runs is the official, signed `node.exe` from the Node.js project and the ffmpeg build from gyan.dev. Don't download ipman as a zip through your browser: files downloaded that way are marked "from the internet", and Smart App Control blocks some of them without a way to allow them. The install command doesn't have that problem.
+- **ipman doesn't start:** the log is in `%LOCALAPPDATA%\ipman\server.log`.
+
+## Development
+
+Requirements: [Node.js](https://nodejs.org/) 24 or newer and Git. For Dolby conversion while developing, also ffmpeg on the PATH (`winget install --id Gyan.FFmpeg -e`).
 
 ```sh
 git clone https://github.com/EndreJordal/ipman.git
 cd ipman
 npm install
-npm start          # builds, then serves the app at http://127.0.0.1:5173
-```
-
-> **Windows PowerShell:** if `npm` fails with *"running scripts is disabled on this system"*, either use `npm.cmd` instead of `npm` (e.g. `npm.cmd start`), or allow local scripts for your user once:
->
-> ```powershell
-> Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
-> ```
-
-On first launch the settings dialog opens: paste your M3U URL and press **Save & reload playlist**.
-
-`npm start` runs [server/index.ts](server/index.ts), a small standalone Node server. It serves the built app together with the stream proxy and the TV guide service.
-
-### Start automatically at login (Windows)
-
-```sh
-npm run autostart:install     # register a logon task and start the server now
-npm run autostart:status      # is it running? shows the last log lines
-npm run autostart:restart     # restart it, e.g. after updating (see below)
-npm run autostart:uninstall   # stop it and remove the logon task
-```
-
-The server runs as a scheduled task named `ipman`, with no window at all. It uses `conhost --headless`, because on Windows 11 a "hidden" PowerShell window still shows up in Windows Terminal, and closing that window would stop the server. You can close the terminal you ran the command in.
-
-The log is written to `.cache/server.log`.
-
-### Updating
-
-```sh
-git pull
-npm install                   # only needed when dependencies changed, but harmless every time
-npm run autostart:restart     # rebuilds the app and restarts the server
-```
-
-**Updating an install from before Dolby audio support:** install ffmpeg once (`winget install --id Gyan.FFmpeg -e`), open a new terminal so it's on the PATH, then run the three commands above. If Dolby channels still say ffmpeg isn't installed, sign out of Windows and back in, so the autostart task picks up the new PATH.
-
-### Development
-
-```sh
 npm run dev        # http://127.0.0.1:5174, with instant reload
 ```
 
-The dev server uses port 5174 so it can run next to the standalone server. Browsers store data per port, so its settings and favorites are separate from the ones on 5173.
+The dev server uses port 5174 so it can run next to an installed ipman on 5173. Browsers store data per port, so its settings and favorites are separate.
+
+> **Windows PowerShell:** if `npm` fails with *"running scripts is disabled on this system"*, use `npm.cmd` instead of `npm`, or allow local scripts for your user once: `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`.
+
+| Command | What it does |
+| --- | --- |
+| `npm run dev` | Dev server with instant reload (port 5174) |
+| `npm start` | Builds and runs the standalone server from the checkout (port 5173) |
+| `npm run typecheck` | Type checks, including a check that server code runs with Node's type stripping |
+| `npm run package` | Builds the release package into `build/release/` |
+| `npm run test:e2e` | Browser tests against a running ipman (`-- --base http://127.0.0.1:5174`) |
+| `powershell -File tests\install-smoke.ps1` | Installs `build/release` in a temporary folder, checks it, uninstalls |
+
+### Releasing
+
+1. Bump `version` in `package.json` and commit.
+2. `git tag v0.2.0 && git push origin v0.2.0` (with the new version).
+3. GitHub Actions ([release.yml](.github/workflows/release.yml)) type checks, builds the package, tests the installer on Windows, and publishes the release. The install command always fetches the latest release.
+
+**How the package works:** the frontend is bundled by Vite as usual. The server, including its one dependency (htmlparser2), is bundled into a single `server.mjs`, so the installed app needs no `node_modules`. [server/paths.ts](server/paths.ts) tells the two layouts apart: an installed package or a project checkout.
 
 ## Features
 
@@ -102,9 +134,9 @@ Most IPTV servers don't send CORS headers, and many only serve plain `http://`. 
 [server/proxy.ts](server/proxy.ts) serves `/proxy?url=…`. It fetches the URL server-side and rewrites HLS playlists so that segments, keys and variant streams also go through the proxy.
 
 - It's enabled by default and can be turned off in settings.
-- It runs inside the ipman server (`npm start`, `npm run dev` or `npm run preview`). A `dist/` build hosted elsewhere can only play streams directly.
+- It runs inside the ipman server: installed, or from a checkout (`npm start`, `npm run dev`). A `dist/` build hosted elsewhere can only play streams directly.
 - It binds to `127.0.0.1` because it will fetch any URL it's given. Don't expose it to a network.
-- If a provider rejects browser user agents, set one, e.g. `IPMAN_USER_AGENT="VLC/3.0.20 LibVLC/3.0.20" npm start`.
+- If a provider rejects browser user agents, set one as a user environment variable, e.g. `setx IPMAN_USER_AGENT "VLC/3.0.20 LibVLC/3.0.20"`, then sign out and back in (or restart ipman).
 
 ## TV guide (EPG)
 

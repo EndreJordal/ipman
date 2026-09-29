@@ -26,6 +26,8 @@ const KEYS = {
   filter: 'ipman.filter',
   volume: 'ipman.volume',
   sidebarCollapsed: 'ipman.sidebarCollapsed',
+  checkUpdates: 'ipman.checkUpdates',
+  skippedVersion: 'ipman.skippedVersion',
 } as const;
 
 function readJson<T>(key: string, fallback: T): T {
@@ -61,6 +63,11 @@ export const store = {
 
   getSidebarCollapsed: () => readJson(KEYS.sidebarCollapsed, false),
   setSidebarCollapsed: (collapsed: boolean) => writeJson(KEYS.sidebarCollapsed, collapsed),
+
+  getCheckUpdates: () => readJson(KEYS.checkUpdates, true),
+  setCheckUpdates: (check: boolean) => writeJson(KEYS.checkUpdates, check),
+  getSkippedVersion: () => readJson<string | null>(KEYS.skippedVersion, null),
+  setSkippedVersion: (version: string) => writeJson(KEYS.skippedVersion, version),
 
   getVolume: () => readJson(KEYS.volume, { volume: 1, muted: false }),
   setVolume: (volume: number, muted: boolean) => writeJson(KEYS.volume, { volume, muted }),

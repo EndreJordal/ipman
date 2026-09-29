@@ -2,10 +2,11 @@ import { defineConfig } from 'vite';
 import { epgService } from './server/epg.ts';
 import { streamProxy } from './server/proxy.ts';
 import { vodInfoService } from './server/mkv-subtitles.ts';
+import { versionService } from './server/version.ts';
 import { transcodeService } from './server/transcode.ts';
 
 export default defineConfig({
-  plugins: [streamProxy(), epgService(), transcodeService(), vodInfoService()],
+  plugins: [streamProxy(), epgService(), transcodeService(), vodInfoService(), versionService()],
   // Bind to localhost only: the proxy will fetch any URL it is given.
   // 5173 belongs to the standalone server (npm start); the dev server runs next to it.
   server: { host: '127.0.0.1', port: 5174, strictPort: true },

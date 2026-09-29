@@ -99,9 +99,30 @@
         </label>
         <label class="check">
           <input id="use-proxy" type="checkbox" />
-          <span>Route playlist and streams through the local proxy <span class="muted">(fixes CORS and http-on-https blocking; needs <code>npm run dev</code> or <code>npm run preview</code>)</span></span>
+          <span>Route playlist and streams through the local proxy <span class="muted">(fixes CORS and http-on-https blocking; built into the ipman server)</span></span>
         </label>
         <p id="settings-info" class="muted"></p>
+        <section class="about">
+          <div class="about-row">
+            <span id="app-version" class="muted"></span>
+            <label class="check inline">
+              <input id="check-updates" type="checkbox" />
+              <span>Check for updates</span>
+            </label>
+          </div>
+          <div id="update-notice" class="update-notice" hidden>
+            <strong id="update-title"></strong>
+            <p id="update-how"></p>
+            <div id="update-command-row" class="command-row">
+              <code id="update-command"></code>
+              <button type="button" id="copy-command">Copy</button>
+            </div>
+            <div class="update-actions">
+              <a id="release-link" target="_blank" rel="noreferrer">What's new</a>
+              <button type="button" id="skip-version" class="link-button">Skip this version</button>
+            </div>
+          </div>
+        </section>
         <div class="actions">
           <button value="cancel" formnovalidate>Cancel</button>
           <button value="save" class="primary">Save &amp; reload playlist</button>

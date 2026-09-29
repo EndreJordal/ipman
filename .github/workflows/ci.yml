@@ -1,0 +1,24 @@
+# On every push to main and every pull request: type check, build the release package, and test
+# the installer on a real Windows machine with Windows PowerShell 5.1 (what users have).
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-and-install:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run package
+      - name: Installer smoke test
+        shell: powershell
+        run: .\tests\install-smoke.ps1

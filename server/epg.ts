@@ -16,8 +16,9 @@ import { createGunzip } from 'node:zlib';
 import { Parser } from 'htmlparser2';
 import type { Plugin } from 'vite';
 import { EPG_PATH, normalizeName, type Guide, type Programme } from '../src/lib/epg.ts';
+import { DATA_DIR } from './paths.ts';
 
-const CACHE_DIR = path.resolve('.cache/epg');
+const CACHE_DIR = path.join(DATA_DIR, 'epg');
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const HEADERS_TIMEOUT_MS = 90_000;
 /** Programme window kept relative to download time. Must outlast CACHE_TTL + the client refresh interval. */

@@ -4,7 +4,7 @@
  * GET /transcode?url=<encoded upstream URL> runs ffmpeg on the stream: video and subtitles
  * are copied untouched, the audio is converted to stereo AAC, and the result is streamed back
  * as MPEG-TS. Converting one audio track costs a few percent of one CPU core.
- * Requires ffmpeg on the PATH (Windows: `winget install Gyan.FFmpeg`) or IPMAN_FFMPEG set to it.
+ * Uses the installed ffmpeg, ffmpeg on the PATH, or IPMAN_FFMPEG (see server/paths.ts).
  */
 import { spawn } from 'node:child_process';
 import type { IncomingMessage, ServerResponse } from 'node:http';
@@ -12,7 +12,7 @@ import type { Plugin } from 'vite';
 import { proxyUrl, TRANSCODE_PATH } from '../src/lib/proxy.ts';
 import { recordTranscodeStart } from './mkv-subtitles.ts';
 
-const FFMPEG = process.env.IPMAN_FFMPEG || 'ffmpeg';
+import { FFMPEG } from './paths.ts';
 /** Give up if ffmpeg produces no output this long after starting (unreachable stream, bad URL). */
 const FIRST_OUTPUT_TIMEOUT_MS = 20_000;
 
@@ -160,15 +160,19 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     ffmpeg.stdout.on('data', (chunk: Buffer) => finder.push(chunk));
   }
 
-  // Channel switch or tab closed: stop ffmpeg, which also closes its upstream connection.
+  // Channel switch, seek or tab closed: stop ffmpeg, which also closes its upstream connection.
+  let browserGone = false;
   res.on('close', () => {
     clearTimeout(timeout);
+    browserGone = !res.writableEnded;
     ffmpeg.kill('SIGKILL');
   });
   ffmpeg.on('error', (err) => sendError(res, 500, `Could not start ffmpeg: ${err.message}`));
   ffmpeg.on('exit', (code) => {
     clearTimeout(timeout);
-    console.log(`[transcode] stopped (pid ${ffmpeg.pid}, exit ${code ?? 'killed'})`);
+    // A kill after the browser left is expected; don't make it look like an ffmpeg error.
+    const reason = browserGone ? 'browser disconnected' : `exit ${code ?? 'killed'}`;
+    console.log(`[transcode] stopped (pid ${ffmpeg.pid}, ${reason})`);
     if (!started) sendError(res, 502, `ffmpeg failed: ${stderr.trim() || `exit code ${code}`}`);
     else res.end();
   });

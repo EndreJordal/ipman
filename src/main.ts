@@ -16,6 +16,7 @@ import { BitmapSubtitles } from './bitmap-subtitles';
 import { PlayerControls } from './controls';
 import { SubtitleMenu } from './subtitles';
 import { VirtualList } from './virtual-list';
+import { initUpdates } from './updates';
 import { VodSubtitles } from './vod-subtitles';
 
 const ROW_HEIGHT = 48;
@@ -451,6 +452,7 @@ els.dialog.addEventListener('close', () => {
 // ---------- Events ----------
 
 els.settingsBtn.addEventListener('click', openSettings);
+initUpdates(els.settingsBtn);
 
 function setSidebarCollapsed(collapsed: boolean, moveFocus = false): void {
   els.app.classList.toggle('sidebar-collapsed', collapsed);
