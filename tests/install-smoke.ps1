@@ -24,7 +24,7 @@ if (Test-Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\ipman')
 }
 
 Write-Host "Installing into $installDir on port $Port"
-& ([scriptblock]::Create((Get-Content -Raw (Join-Path $release 'install.ps1')))) -Source $release -Path $installDir -Port $Port -NoAutostart -NoBrowser
+& ([scriptblock]::Create((Get-Content -Raw (Join-Path $release 'install.ps1')))) -Source $release -Path $installDir -Port $Port -NoAutostart -NoBrowser -AllowAdmin
 
 try {
   $version = (Invoke-RestMethod "http://127.0.0.1:$Port/version" -TimeoutSec 5).version

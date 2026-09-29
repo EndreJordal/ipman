@@ -33,7 +33,9 @@ param(
   # For testing: install from a local folder or another URL, without starting.
   [string]$Source = 'https://github.com/EndreJordal/ipman/releases/latest/download',
   [switch]$NoStart,
-  [switch]$NoBrowser
+  [switch]$NoBrowser,
+  # Skip the "running as administrator" question (CI machines always run as administrator).
+  [switch]$AllowAdmin
 )
 
 # Everything runs in a child scope, so nothing here changes the caller's PowerShell session.
@@ -157,6 +159,24 @@ param(
     Say "Removed $Path, its shortcuts and its cache."
     Say 'Your ipman settings and favorites are stored in your browser; clear the site data for 127.0.0.1 to remove them too.'
     return
+  }
+
+  # ---------- Not as administrator ----------
+
+  # ipman installs for the current user and never needs admin rights. Started from an elevated
+  # window its server would run with admin rights, which normal programs (and the next update)
+  # can't stop. And someone who elevates with another account's password would install ipman
+  # into that other account.
+  $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+  $isAdmin = (New-Object Security.Principal.WindowsPrincipal($identity)).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+  if ($isAdmin -and -not $AllowAdmin) {
+    Write-Host ''
+    Write-Host '  PowerShell is running as administrator. ipman does not need that.' -ForegroundColor Yellow
+    Say "It installs for the account $($identity.Name) only, without admin rights."
+    Say 'Best: close this window, open PowerShell normally (not "Run as administrator"), and run the command again.'
+    $continue = $true # no interactive console: carry on
+    try { $continue = ("$(Read-Host '  Continue as administrator anyway? [y/N]')".Trim().ToLower() -in @('y', 'yes')) } catch { }
+    if (-not $continue) { Say 'Stopped; nothing was changed.'; return }
   }
 
   # ---------- Questions first, so the rest runs unattended ----------
@@ -294,10 +314,15 @@ param(
 
   if ($NoStart) { Say 'Installed (not started: -NoStart).'; return }
   Step 'Starting ipman'
-  $serverArgs = @('--headless', "`"$NodeExe`"", "`"$ServerJs`"")
-  if (-not $NoBrowser) { $serverArgs += '--open' }
-  if ($Port -ne 5173) { $serverArgs += @('--port', "$Port") }
-  Start-Process -FilePath $Conhost -ArgumentList $serverArgs -WindowStyle Hidden
+  if ($NoBrowser) {
+    $serverArgs = @('--headless', "`"$NodeExe`"", "`"$ServerJs`"")
+    if ($Port -ne 5173) { $serverArgs += @('--port', "$Port") }
+    Start-Process -FilePath $Conhost -ArgumentList $serverArgs -WindowStyle Hidden
+  } else {
+    # Start through the new Start-menu entry, handed to Windows Explorer: that runs ipman as the
+    # normal user even when this window is elevated, and proves the entry works.
+    Start-Process -FilePath (Join-Path $env:windir 'explorer.exe') -ArgumentList "`"$StartMenuLink`""
+  }
   $running = Wait-Server 20
   if ($running) {
     Write-Host ''

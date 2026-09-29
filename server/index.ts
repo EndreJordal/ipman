@@ -8,7 +8,7 @@
  * --open: open ipman in the browser once it's up. If ipman is already running, just open the
  * browser (that's what the Start-menu entry does).
  */
-import { execFile } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { createReadStream, createWriteStream, existsSync, renameSync, statSync } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import http, { type IncomingMessage, type ServerResponse } from 'node:http';
@@ -88,10 +88,15 @@ async function serveStatic(req: IncomingMessage, res: ServerResponse): Promise<v
   createReadStream(file).pipe(res);
 }
 
-/** Opens the default browser without a console window (rundll32 is a signed Windows binary). */
+/**
+ * Opens the default browser. On Windows the address goes to explorer.exe, which hands it to the
+ * running Windows shell, and the shell starts the browser. It must be detached: Node kills its
+ * child processes when it exits (the Start-menu entry exits right after this), and anything
+ * started inside the headless console would die with it.
+ */
 function openBrowser(): void {
-  if (process.platform === 'win32') execFile('rundll32.exe', ['url.dll,FileProtocolHandler', URL_], { windowsHide: true });
-  else execFile(process.platform === 'darwin' ? 'open' : 'xdg-open', [URL_]);
+  const [command, args] = process.platform === 'win32' ? ['explorer.exe', [URL_]] : [process.platform === 'darwin' ? 'open' : 'xdg-open', [URL_]];
+  spawn(command, args, { detached: true, stdio: 'ignore' }).unref();
 }
 
 /** Whether the program on our port is ipman (and not something else). */
