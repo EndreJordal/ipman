@@ -1,16 +1,29 @@
+/** Live TV, a movie, or an episode of a series. */
+export type ChannelKind = 'live' | 'movie' | 'series';
+
 export interface Channel {
   /** Stream URL; also the channel's stable key (favorites, last channel). */
   url: string;
   name: string;
   group: string;
+  kind: ChannelKind;
   logo?: string;
   tvgId?: string;
 }
 
+/**
+ * Tells movies and series from live TV by the stream URL. Xtream-style providers put them under
+ * /movie/… and /series/…; otherwise a video-file extension means a movie. Group names aren't
+ * used: public lists name groups of live 24/7 channels "Series" or "Movies".
+ */
+export function channelKind(url: string): ChannelKind {
+  if (/\/series\//i.test(url)) return 'series';
+  if (/\/movie\//i.test(url) || /\.(mkv|mp4|avi|m4v|mov)(\?|$)/i.test(url)) return 'movie';
+  return 'live';
+}
+
 export interface Playlist {
   channels: Channel[];
-  /** Group names in order of first appearance. */
-  groups: string[];
   /** XMLTV guide URL from the #EXTM3U header, if any. */
   epgUrl?: string;
 }
@@ -37,7 +50,6 @@ function splitExtinf(body: string): [meta: string, title: string] {
 
 export function parseM3U(text: string): Playlist {
   const channels: Channel[] = [];
-  const groups = new Set<string>();
   let epgUrl: string | undefined;
   let info: { title: string; attrs: Record<string, string> } | null = null;
   let extGroup: string | undefined;
@@ -57,11 +69,11 @@ export function parseM3U(text: string): Playlist {
     } else if (!line.startsWith('#')) {
       const attrs = info?.attrs ?? {};
       const group = attrs['group-title'] || extGroup || UNGROUPED;
-      groups.add(group);
       channels.push({
         url: line,
         name: info?.title || attrs['tvg-name'] || line,
         group,
+        kind: channelKind(line),
         logo: attrs['tvg-logo'] || undefined,
         tvgId: attrs['tvg-id'] || undefined,
       });
@@ -70,7 +82,7 @@ export function parseM3U(text: string): Playlist {
     }
   }
 
-  return { channels, groups: [...groups], epgUrl };
+  return { channels, epgUrl };
 }
 
 /** Splits provider groups like "Norway - Sport" into country and category; "Srbija" has no category. */

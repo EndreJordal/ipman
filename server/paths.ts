@@ -26,14 +26,20 @@ export const DATA_DIR = process.env.IPMAN_DATA_DIR
     : path.join(PROJECT_ROOT, '.cache');
 mkdirSync(DATA_DIR, { recursive: true });
 
-export const VERSION: string = (() => {
+/**
+ * The running version. An installed package never changes under a running server; a checkout's
+ * package.json does (version bumps while the dev server runs), so it's read on every call there.
+ */
+export function currentVersion(): string {
   try {
     const file = PACKAGED ? path.join(here, 'version.json') : path.join(PROJECT_ROOT, 'package.json');
     return (JSON.parse(readFileSync(file, 'utf8')) as { version: string }).version;
   } catch {
     return '0.0.0';
   }
-})();
+}
+
+export const VERSION = currentVersion();
 
 /** ffmpeg: IPMAN_FFMPEG, then the installed copy next to the app, then the PATH. */
 export const FFMPEG: string = (() => {

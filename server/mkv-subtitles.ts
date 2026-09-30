@@ -12,8 +12,8 @@
  * Only text formats (SRT, ASS/SSA, WebVTT) are extracted; bitmap formats (PGS, VobSub) are not.
  */
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import type { Plugin } from 'vite';
 import { VOD_INFO_PATH } from '../src/lib/proxy.ts';
+import { pathOf } from './http.ts';
 
 export interface MkvSubtitleTrack {
   number: number;
@@ -253,6 +253,12 @@ export class MkvTap {
             this.skip = size.value;
             continue;
           }
+          // Subtitle blocks are small. A huge or unknown size means we're misaligned (a false
+          // resync, a damaged file): buffering it would hold the rest of the movie in memory.
+          if (size.unknown || size.value > MAX_BUFFERED_ELEMENT) {
+            this.syncing = true;
+            continue;
+          }
           if (this.buf.length < headerLength + size.value) return;
           this.block(id.value, track, this.buf.subarray(headerLength, headerLength + size.value), trackNumber.length);
           this.consume(headerLength + size.value);
@@ -412,18 +418,6 @@ function handle(req: IncomingMessage, res: ServerResponse): void {
 }
 
 export function vodInfoMiddleware(req: IncomingMessage, res: ServerResponse, next: () => void): void {
-  if (req.url?.split('?')[0] !== VOD_INFO_PATH) return next();
+  if (pathOf(req) !== VOD_INFO_PATH) return next();
   handle(req, res);
-}
-
-export function vodInfoService(): Plugin {
-  return {
-    name: 'ipman-vod-info',
-    configureServer(server) {
-      server.middlewares.use(vodInfoMiddleware);
-    },
-    configurePreviewServer(server) {
-      server.middlewares.use(vodInfoMiddleware);
-    },
-  };
 }

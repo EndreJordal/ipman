@@ -1,6 +1,6 @@
 # ipman
 
-A personal IPTV viewer for M3U playlists, running in your browser. It plays live channels and movies from your own IPTV subscription, with a TV guide, subtitles, and automatic conversion of Dolby audio that browsers can't play.
+A personal IPTV viewer for M3U playlists, running in your browser. It plays live TV, movies and series from your own IPTV subscription, with a TV guide, poster browsing, resume where you left off, subtitles, and automatic conversion of Dolby audio that browsers can't play.
 
 > **ipman is a player only.** It comes with no channels, playlists or other content. You need your own IPTV subscription and its M3U playlist URL.
 
@@ -96,9 +96,18 @@ The dev server uses port 5174 so it can run next to an installed ipman on 5173. 
 
 ## Features
 
-- **Channel list** with search, logos and favorites. It's virtualized, so large playlists stay fast.
+- **Three sections: TV, MOVIES and SERIES**, from the buttons at the top of the sidebar. The playlist's entries are sorted into them by their stream URLs (`/movie/…`, `/series/…`).
+- **TV:** a channel list with search, logos and favorites. It's virtualized, so large playlists stay fast.
   - Two dropdowns, country and category, built from `Country - Category` group names.
   - Collapsible, so the video can take the full width.
+- **MOVIES:** categories in the sidebar and a grid of poster cards, sortable by title, year or rating.
+  - A details dialog with plot, genre, runtime, cast, trailer and TMDb links, and **Play Movie**.
+  - A started movie gets a blue progress bar and **Resume** (or **Play from start**).
+- **SERIES:** the playlist's episodes grouped into series, as cards with their number of seasons and episodes.
+  - **Resume watching (S2 E5 · Title)** in the details dialog: the episode you left, where you left it, or the next one.
+  - While an episode plays, its seasons and episodes are listed under the player. Each episode has a blue bar for how much of it you've seen. The next episode starts by itself.
+- **Continue watching:** MOVIES and SERIES each list what you've started, most recent first.
+- **Xtream account** (optional, in settings): most providers' playlists come with an Xtream API, found automatically from the playlist URL. It adds ratings, covers, plots, cast and episode titles, and shows your subscription's expiry and connections.
 - **Playback**
   - HLS (`.m3u8`) through hls.js, or natively in Safari.
   - Raw MPEG-TS (`.ts`, common with Xtream-style providers) through mpegts.js.
@@ -116,15 +125,16 @@ The dev server uses port 5174 so it can run next to an installed ipman on 5173. 
   - Text subtitles (SRT, ASS) embedded in MKV movies. The proxy reads them out of the movie data as it passes through ([server/mkv-subtitles.ts](server/mkv-subtitles.ts)).
 - **Dolby and DTS audio** are converted to AAC by ffmpeg ([server/transcode.ts](server/transcode.ts)). This works for live channels and MKV movies, including skipping, and is detected automatically.
 - **TV guide** (see below).
-- **Remembers** the last channel, volume, filters, favorites and sidebar state.
+- **Remembers**, per section: TV resumes your last channel; movies and episodes keep their position, even when you switch to TV in between. Also volume, filters, favorites and sidebar state.
+  - Favorites and watch progress are saved without your provider password in them, so a new password keeps them.
 - Caches the playlist in IndexedDB and refreshes it once it's older than 24 hours.
 
 ### Keyboard
 
 | Key         | Action                      |
 | ----------- | --------------------------- |
-| ↑ / ↓       | Previous / next channel     |
-| ← / →       | Back / forward 10 s (movies)|
+| ↑ / ↓       | Previous / next channel (TV)|
+| ← / →       | Back / forward 10 s (movies, episodes)|
 | Space       | Pause / play                |
 | F           | Fullscreen                  |
 | M           | Mute                        |
@@ -139,6 +149,7 @@ Most IPTV servers don't send CORS headers, and many only serve plain `http://`. 
 - It's enabled by default and can be turned off in settings.
 - It runs inside the ipman server: installed, or from a checkout (`npm start`, `npm run dev`). A `dist/` build hosted elsewhere can only play streams directly.
 - It binds to `127.0.0.1` because it will fetch any URL it's given. Don't expose it to a network.
+- It only answers ipman's own page: requests addressed to another host name (DNS rebinding) or sent by other websites through your browser get a 403.
 - If a provider rejects browser user agents, set one as a user environment variable, e.g. `setx IPMAN_USER_AGENT "VLC/3.0.20 LibVLC/3.0.20"`, then sign out and back in (or restart ipman).
 
 ## TV guide (EPG)

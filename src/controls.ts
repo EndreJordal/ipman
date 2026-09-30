@@ -4,18 +4,10 @@
  * seeked; streams with a known duration (movies, series) get a seek bar and elapsed/total time.
  * The bar hides after a few seconds without mouse movement while playing.
  */
+import { formatClock as formatTime } from './catalog';
 import type { Timeline } from './player';
 
 const IDLE_MS = 3000;
-
-/** 75 → "1:15", 4000 → "1:06:40". */
-function formatTime(seconds: number): string {
-  const s = Math.max(0, Math.floor(seconds));
-  const h = Math.floor(s / 3600);
-  const m = Math.floor((s % 3600) / 60);
-  const ss = String(s % 60).padStart(2, '0');
-  return h ? `${h}:${String(m).padStart(2, '0')}:${ss}` : `${m}:${ss}`;
-}
 
 const ICONS = {
   pause: '<path d="M7 5h3.5v14H7zM13.5 5H17v14h-3.5z" />',

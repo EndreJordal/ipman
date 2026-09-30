@@ -26,7 +26,6 @@ export function initUpdates(settingsButton: HTMLElement): void {
     notice: byId('update-notice'),
     title: byId('update-title'),
     how: byId('update-how'),
-    commandRow: byId('update-command-row'),
     command: byId('update-command'),
     copy: byId<HTMLButtonElement>('copy-command'),
     releaseLink: byId<HTMLAnchorElement>('release-link'),
@@ -35,7 +34,7 @@ export function initUpdates(settingsButton: HTMLElement): void {
   let info: VersionInfo | null = null;
 
   const render = () => {
-    els.version.textContent = info ? `ipman ${info.version}` : '';
+    els.version.textContent = info ? `ipman ${info.version}${info.packaged ? '' : ' (dev)'}` : '';
     els.checkUpdates.checked = store.getCheckUpdates();
     const show = !!info?.updateAvailable && store.getCheckUpdates() && info.latest !== store.getSkippedVersion();
     els.notice.hidden = !show;
@@ -43,14 +42,9 @@ export function initUpdates(settingsButton: HTMLElement): void {
     settingsButton.title = show ? 'Settings: an update is available' : 'Settings';
     if (!show || !info) return;
     els.title.textContent = `ipman ${info.latest} is available (you have ${info.version}).`;
-    if (info.packaged) {
-      els.how.textContent = 'To update, run this in PowerShell. Your settings and favorites are kept.';
-      els.command.textContent = info.installCommand;
-      els.commandRow.hidden = false;
-    } else {
-      els.how.textContent = 'You are running ipman from source: update with git pull.';
-      els.commandRow.hidden = true;
-    }
+    // The server only reports updates for installed copies; source checkouts are always current.
+    els.how.textContent = 'To update, run this in PowerShell. Your settings and favorites are kept.';
+    els.command.textContent = info.installCommand;
     els.releaseLink.hidden = !info.releaseUrl;
     if (info.releaseUrl) els.releaseLink.href = info.releaseUrl;
   };

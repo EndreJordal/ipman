@@ -1,5 +1,5 @@
 /**
- * TV guide service for the Vite dev/preview server.
+ * TV guide service.
  *
  * GET /epg?url=<encoded XMLTV URL>[&force=1] downloads the XMLTV file (often 50–300 MB,
  * sometimes gzipped), keeps only programmes near the current time, and returns a compact
@@ -7,20 +7,26 @@
  * tens of seconds to generate xmltv.php.
  */
 import { createHash } from 'node:crypto';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, stat, unlink, writeFile } from 'node:fs/promises';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import path from 'node:path';
 import { pipeline, Readable } from 'node:stream';
 import type { ReadableStream as NodeReadableStream } from 'node:stream/web';
 import { createGunzip } from 'node:zlib';
 import { Parser } from 'htmlparser2';
-import type { Plugin } from 'vite';
 import { EPG_PATH, normalizeName, type Guide, type Programme } from '../src/lib/epg.ts';
+import { pathOf, sendError, targetFromQuery } from './http.ts';
 import { DATA_DIR } from './paths.ts';
 
 const CACHE_DIR = path.join(DATA_DIR, 'epg');
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const HEADERS_TIMEOUT_MS = 90_000;
+/** A whole download, however slowly the server sends it. */
+const DOWNLOAD_TIMEOUT_MS = 10 * 60 * 1000;
+/** Guides in memory (a few MB each): one per provider in use is plenty. */
+const MEMORY_ENTRIES = 2;
+/** Guide files on disk that haven't been used this long are deleted. */
+const DISK_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 /** Programme window kept relative to download time. Must outlast CACHE_TTL + the client refresh interval. */
 const KEEP_PAST_MS = 60 * 60 * 1000;
 const KEEP_AHEAD_MS = 16 * 60 * 60 * 1000;
@@ -148,7 +154,8 @@ async function downloadGuide(url: string): Promise<CacheEntry> {
   const headers = process.env.IPMAN_USER_AGENT ? { 'user-agent': process.env.IPMAN_USER_AGENT } : undefined;
   let res: Response;
   try {
-    res = await fetch(url, { headers, signal: abort.signal });
+    // The overall deadline also covers a server that trickles the file out forever.
+    res = await fetch(url, { headers, signal: AbortSignal.any([abort.signal, AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS)]) });
   } finally {
     clearTimeout(timer);
   }
@@ -165,16 +172,36 @@ function cacheFile(url: string): string {
   return path.join(CACHE_DIR, `${createHash('sha1').update(url).digest('hex')}.json`);
 }
 
+/** Keeps the entry, as the most recently used, and drops the least recently used beyond the limit. */
+function remember(url: string, entry: CacheEntry): void {
+  memoryCache.delete(url);
+  memoryCache.set(url, entry);
+  while (memoryCache.size > MEMORY_ENTRIES) memoryCache.delete(memoryCache.keys().next().value!);
+}
+
 async function readCache(url: string): Promise<CacheEntry | undefined> {
   const hit = memoryCache.get(url);
-  if (hit) return hit;
+  if (hit) {
+    remember(url, hit);
+    return hit;
+  }
   try {
     const json = await readFile(cacheFile(url), 'utf8');
     const entry = { fetchedAt: (JSON.parse(json) as Guide).fetchedAt, json };
-    memoryCache.set(url, entry);
+    remember(url, entry);
     return entry;
   } catch {
     return undefined;
+  }
+}
+
+/** Deletes guide files not written for a week (old providers, old credentials). */
+async function pruneDiskCache(): Promise<void> {
+  const files = await readdir(CACHE_DIR).catch(() => [] as string[]);
+  for (const name of files) {
+    const file = path.join(CACHE_DIR, name);
+    const info = await stat(file).catch(() => null);
+    if (info && Date.now() - info.mtimeMs > DISK_MAX_AGE_MS) await unlink(file).catch(() => {});
   }
 }
 
@@ -186,9 +213,10 @@ async function getGuide(url: string, force: boolean): Promise<CacheEntry> {
   if (!pending) {
     pending = downloadGuide(url)
       .then(async (entry) => {
-        memoryCache.set(url, entry);
+        remember(url, entry);
         await mkdir(CACHE_DIR, { recursive: true });
         await writeFile(cacheFile(url), entry.json);
+        void pruneDiskCache();
         return entry;
       })
       .finally(() => inflight.delete(url));
@@ -208,15 +236,8 @@ async function getGuide(url: string, force: boolean): Promise<CacheEntry> {
 
 async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const params = new URL(req.url ?? '', 'http://localhost').searchParams;
-  let target: URL;
-  try {
-    target = new URL(params.get('url') ?? '');
-    if (target.protocol !== 'http:' && target.protocol !== 'https:') throw new Error();
-  } catch {
-    res.statusCode = 400;
-    res.end('Missing or invalid ?url= parameter');
-    return;
-  }
+  const target = targetFromQuery(req);
+  if (!target) return sendError(res, 400, 'Missing or invalid ?url= parameter');
 
   const entry = await getGuide(target.href, params.has('force'));
   res.setHeader('content-type', 'application/json');
@@ -225,24 +246,9 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
 }
 
 export function epgMiddleware(req: IncomingMessage, res: ServerResponse, next: () => void): void {
-  if (req.url?.split('?')[0] !== EPG_PATH) return next();
+  if (pathOf(req) !== EPG_PATH) return next();
   handle(req, res).catch((err: Error) => {
     console.warn(`[epg] ${err.message}`);
-    if (res.headersSent) return res.destroy();
-    res.statusCode = 502;
-    res.setHeader('content-type', 'text/plain; charset=utf-8');
-    res.end(`Could not load guide: ${err.message}`);
+    sendError(res, 502, `Could not load guide: ${err.message}`);
   });
-}
-
-export function epgService(): Plugin {
-  return {
-    name: 'ipman-epg',
-    configureServer(server) {
-      server.middlewares.use(epgMiddleware);
-    },
-    configurePreviewServer(server) {
-      server.middlewares.use(epgMiddleware);
-    },
-  };
 }

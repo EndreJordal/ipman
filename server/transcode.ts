@@ -8,11 +8,11 @@
  */
 import { spawn } from 'node:child_process';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import type { Plugin } from 'vite';
 import { proxyUrl, TRANSCODE_PATH } from '../src/lib/proxy.ts';
+import { pathOf, sendError, targetFromQuery } from './http.ts';
 import { recordTranscodeStart } from './mkv-subtitles.ts';
-
 import { FFMPEG } from './paths.ts';
+
 /** Give up if ffmpeg produces no output this long after starting (unreachable stream, bad URL). */
 const FIRST_OUTPUT_TIMEOUT_MS = 20_000;
 
@@ -86,31 +86,27 @@ class FirstTimestampFinder {
   }
 }
 
-function sendError(res: ServerResponse, status: number, message: string): void {
-  if (res.headersSent) return void res.destroy();
-  res.statusCode = status;
-  res.setHeader('content-type', 'text/plain; charset=utf-8');
-  res.end(message);
-}
-
 async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
-  let target: URL;
-  try {
-    target = new URL(new URL(req.url ?? '', 'http://localhost').searchParams.get('url') ?? '');
-    if (target.protocol !== 'http:' && target.protocol !== 'https:') throw new Error();
-  } catch {
-    return sendError(res, 400, 'Missing or invalid ?url= parameter');
-  }
+  const target = targetFromQuery(req);
+  if (!target) return sendError(res, 400, 'Missing or invalid ?url= parameter');
+  // The browser may leave while ffmpeg is being looked for (the first time, that takes a
+  // moment): then don't start one, which would hold the provider's connection with nobody watching.
+  let left = false;
+  res.once('close', () => (left = true));
   if (!(await ffmpegAvailable())) {
     return sendError(res, 501, 'ffmpeg is not installed on the ipman server');
   }
+  if (left) return;
 
   // Movies pass `start` (seconds): seeking restarts ffmpeg there. They're read through our own
   // proxy so the MKV subtitle tap keeps working, and keep their original timestamps (-copyts),
   // so subtitles line up; the exact start of the output is reported back through /vod-info.
   const start = new URL(req.url ?? '', 'http://localhost').searchParams.get('start');
-  const vod = start !== null && Number.isFinite(Number(start));
-  const input = vod ? `http://127.0.0.1:${req.socket.localPort}${proxyUrl(target.href)}` : target.href;
+  const vod = start !== null && /^\d+(\.\d+)?$/.test(start);
+  // Our own proxy, at the address this request came in on (127.0.0.1, or ::1).
+  const local = req.socket.localAddress ?? '127.0.0.1';
+  const host = local.includes(':') ? `[${local}]` : local;
+  const input = vod ? `http://${host}:${req.socket.localPort}${proxyUrl(target.href)}` : target.href;
 
   const userAgent = process.env.IPMAN_USER_AGENT;
   const args = [
@@ -179,19 +175,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
 }
 
 export function transcodeMiddleware(req: IncomingMessage, res: ServerResponse, next: () => void): void {
-  if (req.url?.split('?')[0] !== TRANSCODE_PATH) return next();
+  if (pathOf(req) !== TRANSCODE_PATH) return next();
   if (req.method !== 'GET') return sendError(res, 405, 'Method not allowed');
   handle(req, res).catch((err: Error) => sendError(res, 500, `Transcode error: ${err.message}`));
-}
-
-export function transcodeService(): Plugin {
-  return {
-    name: 'ipman-transcode',
-    configureServer(server) {
-      server.middlewares.use(transcodeMiddleware);
-    },
-    configurePreviewServer(server) {
-      server.middlewares.use(transcodeMiddleware);
-    },
-  };
 }

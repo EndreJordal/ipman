@@ -1,5 +1,5 @@
 /**
- * Stream proxy for the Vite dev/preview server.
+ * Stream proxy.
  *
  * GET /proxy?url=<encoded upstream URL> fetches the upstream resource server-side, which
  * sidesteps CORS and mixed-content (http stream on an https page) restrictions.
@@ -8,8 +8,8 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { Readable } from 'node:stream';
 import type { ReadableStream as NodeReadableStream } from 'node:stream/web';
-import type { Plugin } from 'vite';
 import { PROXY_PATH, proxyUrl } from '../src/lib/proxy.ts';
+import { pathOf, sendError, targetFromQuery } from './http.ts';
 import { tapForResponse } from './mkv-subtitles.ts';
 
 /** Time allowed for the upstream to send response headers. Bodies (live streams) may run forever. */
@@ -39,28 +39,11 @@ function looksLikePlaylist(contentType: string, url: string): boolean {
   return /\.m3u8?$/i.test(new URL(url).pathname);
 }
 
-function sendError(res: ServerResponse, status: number, message: string): void {
-  if (res.headersSent) {
-    res.destroy();
-    return;
-  }
-  res.statusCode = status;
-  res.setHeader('content-type', 'text/plain; charset=utf-8');
-  res.end(message);
-}
-
 async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
   if (req.method !== 'GET' && req.method !== 'HEAD') return sendError(res, 405, 'Method not allowed');
 
-  let target: URL;
-  try {
-    target = new URL(new URL(req.url ?? '', 'http://localhost').searchParams.get('url') ?? '');
-  } catch {
-    return sendError(res, 400, 'Missing or invalid ?url= parameter');
-  }
-  if (target.protocol !== 'http:' && target.protocol !== 'https:') {
-    return sendError(res, 400, 'Only http(s) URLs can be proxied');
-  }
+  const target = targetFromQuery(req);
+  if (!target) return sendError(res, 400, 'Missing or invalid ?url= parameter (http or https only)');
 
   const headers: Record<string, string> = {};
   for (const name of FORWARD_REQUEST_HEADERS) {
@@ -116,18 +99,6 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
 }
 
 export function proxyMiddleware(req: IncomingMessage, res: ServerResponse, next: () => void): void {
-  if (req.url?.split('?')[0] !== PROXY_PATH) return next();
+  if (pathOf(req) !== PROXY_PATH) return next();
   handle(req, res).catch((err: Error) => sendError(res, 502, `Proxy error: ${err.message}`));
-}
-
-export function streamProxy(): Plugin {
-  return {
-    name: 'ipman-stream-proxy',
-    configureServer(server) {
-      server.middlewares.use(proxyMiddleware);
-    },
-    configurePreviewServer(server) {
-      server.middlewares.use(proxyMiddleware);
-    },
-  };
 }

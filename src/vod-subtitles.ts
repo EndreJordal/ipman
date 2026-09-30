@@ -44,6 +44,15 @@ interface LocalTrack {
   vtt: VTTCue[];
 }
 
+/** Chrome drops cues on its own at times (see refill); removing one it no longer has throws. */
+function removeCue(track: TextTrack, cue: VTTCue): void {
+  try {
+    track.removeCue(cue);
+  } catch {
+    // Not in the track (any more): nothing to remove.
+  }
+}
+
 export class VodSubtitles {
   private url = '';
   private cursor = 0;
@@ -54,6 +63,11 @@ export class VodSubtitles {
   /** Requested start of the converted stream, to ask the server where it really began. */
   private requestedStart: number | null = null;
   private onInfo: ((info: VodInfo) => void) | null = null;
+  /**
+   * Incremented on attach, detach and every re-poll. Only the newest poll may apply its answer:
+   * two polls answering from the same cursor would add every cue twice.
+   */
+  private generation = 0;
 
   constructor(private video: HTMLVideoElement) {
     video.textTracks.addEventListener('change', () => this.refill());
@@ -73,6 +87,7 @@ export class VodSubtitles {
 
   /** Channel switch: stop polling and remove this movie's tracks from the video element. */
   detach(): void {
+    this.generation++;
     clearTimeout(this.timer);
     this.url = '';
     this.cursor = 0;
@@ -96,7 +111,7 @@ export class VodSubtitles {
     this.offset = offset;
     for (const local of this.tracks.values()) {
       const { track } = local.element;
-      for (const cue of local.vtt) if (track.cues) track.removeCue(cue);
+      for (const cue of local.vtt) removeCue(track, cue);
       local.vtt = local.cues.map((c) => this.toVtt(c));
     }
     this.refill();
@@ -107,13 +122,14 @@ export class VodSubtitles {
   }
 
   private async poll(): Promise<void> {
+    const generation = ++this.generation;
     const url = this.url;
     const forStart = this.requestedStart;
     try {
       const start = this.requestedStart === null ? '' : `&start=${this.requestedStart.toFixed(3)}`;
       const res = await fetch(`${VOD_INFO_PATH}?url=${encodeURIComponent(url)}&cursor=${this.cursor}${start}`);
       const data = (await res.json()) as VodInfo & { tracks: ServerTrack[]; cues: ServerCue[]; cursor: number };
-      if (url !== this.url) return; // switched channel meanwhile
+      if (generation !== this.generation) return; // switched movie, or a newer poll took over
       for (const track of data.tracks) this.ensureTrack(track);
       for (const cue of data.cues) this.addCue(cue);
       this.cursor = data.cursor;
@@ -122,7 +138,7 @@ export class VodSubtitles {
     } catch {
       // Server busy or restarting: try again next round.
     }
-    if (url === this.url) {
+    if (generation === this.generation) {
       clearTimeout(this.timer);
       this.timer = window.setTimeout(() => void this.poll(), POLL_MS);
     }

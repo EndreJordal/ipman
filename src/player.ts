@@ -47,6 +47,9 @@ function mkvAudioPlayable(codec: string | null): boolean {
   return !known || MediaSource.isTypeSupported(`audio/mp4; codecs="${known[1]}"`);
 }
 
+/** mpegts.js runs in a worker, so its URLs must be absolute. */
+const absolute = (url: string) => new URL(url, location.href).href;
+
 function isMkv(url: string): boolean {
   try {
     return /\.mkv$/i.test(new URL(url).pathname);
@@ -136,6 +139,21 @@ async function probeEngine(src: string, signal: AbortSignal): Promise<Engine | n
   }
 }
 
+/**
+ * The video element only says that it failed, with the same error for a file it can't decode
+ * and a file the provider refused. Asking for the first byte tells them apart.
+ */
+async function nativeErrorMessage(src: string, signal: AbortSignal): Promise<string> {
+  try {
+    const res = await fetch(src, { headers: { range: 'bytes=0-0' }, signal: AbortSignal.any([signal, AbortSignal.timeout(PROBE_TIMEOUT_MS)]) });
+    void res.body?.cancel();
+    if (!res.ok) return `Stream unavailable (HTTP ${res.status}): the provider could not deliver it.`;
+  } catch {
+    // Unreachable: fall through to the general message.
+  }
+  return 'The browser could not play this stream.';
+}
+
 function describeHlsError(data: ErrorData): string {
   switch (data.details) {
     case Hls.ErrorDetails.MANIFEST_INCOMPATIBLE_CODECS_ERROR:
@@ -177,6 +195,8 @@ export class Player {
   private vod: { duration: number; requested: number; start: number | null } | null = null;
   private seekTimer = 0;
   private stallWatch = 0;
+  /** Where to start the current movie or episode (resume), in seconds; 0 once applied. */
+  private startAt = 0;
 
   constructor(
     private video: HTMLVideoElement,
@@ -194,23 +214,25 @@ export class Player {
       // Pause and rebuild a proper buffer instead.
       if (!this.video.paused && !this.bufferTimer) {
         this.video.pause();
-        this.playWhenBuffered(this.session, REBUFFER_S);
+        this.playWhenBuffered(this.session, REBUFFER_S, false);
       }
     });
     // The user pressing play overrides any buffering wait.
     video.addEventListener('play', () => this.cancelBufferWait());
   }
 
-  play(url: string, useProxy: boolean): void {
+  /** @param startAt seconds into a movie or episode, to resume where it was left. */
+  play(url: string, useProxy: boolean, startAt = 0): void {
     this.teardown();
     const session = ++this.session;
     this.url = url;
+    this.startAt = startAt;
     // mpegts.js runs in a worker, so relative URLs must be made absolute.
     const src = useProxy ? new URL(proxyUrl(url), location.href).href : url;
     const { engine, fallback } = guessEngine(url);
     this.onStatus({ state: 'loading' });
     if (transcodeChannels.has(url)) {
-      return isMkv(url) ? this.startVodTranscode(session, 0) : this.startTranscoded(session);
+      return isMkv(url) ? this.startVodTranscode(session, this.takeStart()) : this.startTranscoded(session);
     }
     if (!fallback) return this.start(engine, src, null, session);
 
@@ -218,7 +240,8 @@ export class Player {
     // timeouts before giving up on what is really an endless MPEG-TS stream. So probe it instead.
     const origin = originOf(url);
     const learned = learnedEngines.get(origin);
-    if (learned) return this.start(learned, src, null, session);
+    // The server's other channels may still be raw MPEG-TS: keep that as the fallback.
+    if (learned) return this.start(learned, src, learned === 'mpegts' ? null : 'mpegts', session);
 
     const abort = new AbortController();
     this.cleanup = () => abort.abort();
@@ -244,18 +267,21 @@ export class Player {
 
   /** Plays the current channel through the server's ffmpeg, which converts Dolby audio to AAC. */
   private startTranscoded(session: number): void {
-    this.startMpegts(new URL(transcodeUrl(this.url), location.href).href, null, session, true);
+    this.startMpegts(absolute(transcodeUrl(this.url)), null, session, true);
   }
 
   /** Plays a movie through ffmpeg from `from` seconds. Seeking restarts it at the new position. */
   private startVodTranscode(session: number, from: number, duration = this.vod?.duration ?? NaN): void {
     this.teardown(true);
+    // Whatever starts the conversion now (a stall restart) replaces a seek still waiting to:
+    // two restarts in a row would briefly hold two provider connections.
+    clearTimeout(this.seekTimer);
     this.vod = { duration, requested: from, start: null };
     const subtitles = this.vodSubtitles;
     if (subtitles && !subtitles.isAttached(this.url)) subtitles.attach(this.url, (info) => this.onMovieInfo(session, info));
     subtitles?.setRequestedStart(from);
     this.onStatus({ state: 'loading' });
-    this.startMpegts(new URL(transcodeUrl(this.url, from), location.href).href, null, session, true);
+    this.startMpegts(absolute(transcodeUrl(this.url, from)), null, session, true);
     this.watchForStalls(session);
   }
 
@@ -271,7 +297,11 @@ export class Player {
       const vod = this.vod;
       if (session !== this.session || !vod) return clearInterval(this.stallWatch);
       const { buffered, currentTime } = this.video;
-      const end = buffered.length ? buffered.end(buffered.length - 1) : 0;
+      if (!buffered.length) {
+        stuckSince = Date.now(); // still starting: the server gives up on ffmpeg by itself
+        return;
+      }
+      const end = buffered.end(buffered.length - 1);
       const starving = end - currentTime < 0.5;
       if (end > lastEnd + 0.1 || !starving) {
         lastEnd = Math.max(lastEnd, end);
@@ -292,7 +322,8 @@ export class Player {
       // Playing natively. If Chrome can't decode the audio it plays silently, so switch to ffmpeg.
       if (!mkvAudioPlayable(info.audioCodec)) {
         rememberTranscode(this.url);
-        this.startVodTranscode(session, this.video.currentTime, info.duration ?? NaN);
+        // Before its metadata arrives, the video is still at 0, not at the resume position.
+        this.startVodTranscode(session, this.takeStart() || this.video.currentTime, info.duration ?? NaN);
       }
       return;
     }
@@ -328,6 +359,13 @@ export class Player {
     return { duration: vod.duration, position, bufferedEnd, seek: (t) => this.seekVod(t) };
   }
 
+  /** The resume position, once: later restarts (seeking, stalls) have their own positions. */
+  private takeStart(): number {
+    const at = this.startAt;
+    this.startAt = 0;
+    return at;
+  }
+
   /** The browser can't decode this stream's audio: restart the channel through ffmpeg. */
   private switchToTranscode(session: number): void {
     if (session !== this.session) return;
@@ -353,6 +391,7 @@ export class Player {
     const hls = new Hls({
       enableWorker: true,
       backBufferLength: 30,
+      startPosition: this.takeStart() || -1,
       // When HLS is only a guess, give up quickly instead of retrying for up to a minute.
       ...(fallback && {
         manifestLoadPolicy: {
@@ -408,10 +447,14 @@ export class Player {
 
     player.on(mpegts.Events.MEDIA_INFO, (info: { audioCodec?: string }) => {
       fallback = null;
-      if (transcoding) rememberTranscode(this.url);
       // Spotting Dolby audio here restarts the channel before the browser even tries to decode it.
-      else if (unsupportedAudio(info.audioCodec)) this.switchToTranscode(session);
+      if (!transcoding && unsupportedAudio(info.audioCodec)) this.switchToTranscode(session);
     });
+    // Converted and its first frame decoded: next time start converted. (If not, the video was
+    // the problem too, e.g. HEVC, and converting the audio doesn't help.)
+    if (transcoding) {
+      this.video.addEventListener('loadeddata', () => session === this.session && rememberTranscode(this.url), { once: true });
+    }
     const subtitles = this.bitmapSubtitles;
     if (subtitles) {
       // The PMT descriptors announce the DVB subtitle tracks; the PES packets carry their data.
@@ -437,38 +480,56 @@ export class Player {
   }
 
   private startNative(src: string, fallback: Engine | null, session: number): void {
-    const onError = () => this.fail(session, 'The browser could not play this stream.', src, fallback);
+    const probe = new AbortController();
+    const onError = () => void nativeErrorMessage(src, probe.signal).then((message) => this.fail(session, message, src, fallback));
+    // Resume: jump to the saved position as soon as the duration is known, before buffering.
+    const onMetadata = () => {
+      const at = this.takeStart();
+      if (at && at < this.video.duration) this.video.currentTime = at;
+    };
     this.video.addEventListener('error', onError);
-    this.cleanup = () => this.video.removeEventListener('error', onError);
+    this.video.addEventListener('loadedmetadata', onMetadata, { once: true });
+    this.cleanup = () => {
+      probe.abort();
+      this.video.removeEventListener('error', onError);
+      this.video.removeEventListener('loadedmetadata', onMetadata);
+    };
     this.video.src = src;
     // MKV movies through the proxy: their embedded subtitles become available as they download.
     if (src !== this.url && isMkv(this.url)) this.vodSubtitles?.attach(this.url, (info) => this.onMovieInfo(session, info));
     this.playWhenBuffered(session, START_BUFFER_S);
   }
 
-  /** Seconds of media ahead of the playhead, and where that buffered range starts. */
-  private bufferedAhead(): { ahead: number; rangeStart: number } {
+  /**
+   * Seconds of media ahead of the playhead, and where that buffered range starts. With
+   * `atPlayhead`, only the range the playhead is in counts: after a seek back, a range
+   * buffered further on is no reason to play (or to jump there).
+   */
+  private bufferedAhead(atPlayhead: boolean): { ahead: number; rangeStart: number } {
     const { buffered, currentTime } = this.video;
     for (let i = 0; i < buffered.length; i++) {
-      if (buffered.end(i) > currentTime) {
-        return { ahead: buffered.end(i) - Math.max(currentTime, buffered.start(i)), rangeStart: buffered.start(i) };
-      }
+      if (buffered.end(i) <= currentTime) continue;
+      if (atPlayhead && buffered.start(i) > currentTime + 0.1) break;
+      return { ahead: buffered.end(i) - Math.max(currentTime, buffered.start(i)), rangeStart: buffered.start(i) };
     }
     return { ahead: 0, rangeStart: currentTime };
   }
 
-  /** Lets the engine fill the buffer before playing, so a slow start doesn't stutter. */
-  private playWhenBuffered(session: number, seconds: number): void {
+  /**
+   * Lets the engine fill the buffer before playing, so a slow start doesn't stutter.
+   * @param starting the stream's first start (not a rebuffer): it may jump to the first data.
+   */
+  private playWhenBuffered(session: number, seconds: number, starting = true): void {
     this.cancelBufferWait();
     const startedAt = Date.now();
     this.bufferTimer = window.setInterval(() => {
       if (session !== this.session) return this.cancelBufferWait();
-      const { ahead, rangeStart } = this.bufferedAhead();
+      const { ahead, rangeStart } = this.bufferedAhead(!starting);
       // Play anyway after a while: the stream may be too slow to reach the target.
       if (ahead < seconds && Date.now() - startedAt < MAX_BUFFER_WAIT_MS) return;
       this.cancelBufferWait();
       // Live streams rarely start at t=0; jump to the buffered data instead of stalling on a gap.
-      if (this.video.currentTime < rangeStart) this.video.currentTime = rangeStart;
+      if (starting && this.video.currentTime < rangeStart) this.video.currentTime = rangeStart;
       this.autoplay(session);
     }, BUFFER_POLL_MS);
   }

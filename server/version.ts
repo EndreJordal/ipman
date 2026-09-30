@@ -5,8 +5,8 @@
  * setting), at most every 12 hours. Failures (offline, rate limit) are silent.
  */
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import type { Plugin } from 'vite';
-import { PACKAGED, VERSION } from './paths.ts';
+import { pathOf, sendError } from './http.ts';
+import { currentVersion, PACKAGED } from './paths.ts';
 
 export const VERSION_PATH = '/version';
 const REPO = 'EndreJordal/ipman';
@@ -36,7 +36,7 @@ export function compareVersions(a: string, b: string): number {
 async function refresh(): Promise<void> {
   try {
     const res = await fetch(RELEASES_API, {
-      headers: { accept: 'application/vnd.github+json', 'user-agent': `ipman/${VERSION}` },
+      headers: { accept: 'application/vnd.github+json', 'user-agent': `ipman/${currentVersion()}` },
       signal: AbortSignal.timeout(CHECK_TIMEOUT_MS),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -50,17 +50,19 @@ async function refresh(): Promise<void> {
 }
 
 async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
-  const check = new URL(req.url ?? '', 'http://localhost').searchParams.get('check') === '1';
+  // Running from source (dev server, npm start) is the newest code by definition: no update check.
+  const check = PACKAGED && new URL(req.url ?? '', 'http://localhost').searchParams.get('check') === '1';
   if (check && (!latest || Date.now() - latest.checkedAt > CHECK_INTERVAL_MS)) {
     checking ??= refresh().finally(() => (checking = null));
     await checking;
   }
-  const updateAvailable = !!latest && compareVersions(latest.version, VERSION) > 0;
+  const version = currentVersion();
+  const updateAvailable = PACKAGED && !!latest && compareVersions(latest.version, version) > 0;
   res.setHeader('content-type', 'application/json');
   res.setHeader('cache-control', 'no-store');
   res.end(
     JSON.stringify({
-      version: VERSION,
+      version,
       packaged: PACKAGED,
       latest: latest?.version ?? null,
       releaseUrl: latest?.url ?? null,
@@ -71,21 +73,6 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
 }
 
 export function versionMiddleware(req: IncomingMessage, res: ServerResponse, next: () => void): void {
-  if (req.url?.split('?')[0] !== VERSION_PATH) return next();
-  handle(req, res).catch((err: Error) => {
-    res.statusCode = 500;
-    res.end(err.message);
-  });
-}
-
-export function versionService(): Plugin {
-  return {
-    name: 'ipman-version',
-    configureServer(server) {
-      server.middlewares.use(versionMiddleware);
-    },
-    configurePreviewServer(server) {
-      server.middlewares.use(versionMiddleware);
-    },
-  };
+  if (pathOf(req) !== VERSION_PATH) return next();
+  handle(req, res).catch((err: Error) => sendError(res, 500, err.message));
 }

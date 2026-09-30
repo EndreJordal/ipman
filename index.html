@@ -13,6 +13,11 @@
       <aside class="sidebar">
         <div class="sidebar-header">
           <h1 class="brand">ipman</h1>
+          <nav class="sections" aria-label="Sections">
+            <button type="button" class="section-btn" data-section="live" aria-pressed="true">TV</button>
+            <button type="button" class="section-btn" data-section="movie" aria-pressed="false">MOVIES</button>
+            <button type="button" class="section-btn" data-section="series" aria-pressed="false">SERIES</button>
+          </nav>
           <div class="header-actions">
             <button id="settings-btn" class="icon-btn" title="Settings" aria-label="Settings">⚙</button>
             <button id="collapse-btn" class="icon-btn" title="Hide channel list" aria-label="Hide channel list">
@@ -29,10 +34,42 @@
         </div>
         <div id="channel-count" class="channel-count"></div>
         <div id="channel-list" class="channel-list" role="listbox" aria-label="Channels"></div>
+        <nav id="movie-categories" class="category-list" aria-label="Movie categories"></nav>
+        <nav id="series-categories" class="category-list" aria-label="Series categories"></nav>
         <div class="shortcuts">↑↓ zap · ←→ seek · Space pause · F fullscreen · M mute · S favorite · / search</div>
       </aside>
 
       <main class="stage">
+        <section id="movie-browser" class="movie-browser" aria-labelledby="movie-heading">
+          <header class="movie-browser-head">
+            <h2 id="movie-heading">All movies</h2>
+            <span id="movie-count" class="muted"></span>
+            <label class="movie-sort">
+              Sort by
+              <select id="movie-sort">
+                <option value="title">Title (A–Z)</option>
+                <option value="year">Year (newest first)</option>
+                <option value="rating">Rating (highest first)</option>
+              </select>
+            </label>
+          </header>
+          <div id="movie-grid" class="movie-grid"></div>
+        </section>
+        <section id="series-browser" class="movie-browser" aria-labelledby="series-heading">
+          <header class="movie-browser-head">
+            <h2 id="series-heading">All series</h2>
+            <span id="series-count" class="muted"></span>
+            <label class="movie-sort">
+              Sort by
+              <select id="series-sort">
+                <option value="title">Title (A–Z)</option>
+                <option value="year">Year (newest first)</option>
+                <option value="rating">Rating (highest first)</option>
+              </select>
+            </label>
+          </header>
+          <div id="series-grid" class="movie-grid"></div>
+        </section>
         <button id="expand-btn" class="icon-btn expand-btn" title="Show channel list" aria-label="Show channel list" hidden>
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5l7 7-7 7" /></svg>
         </button>
@@ -73,6 +110,7 @@
           </div>
         </div>
         <div class="now-playing">
+          <button type="button" id="back-btn" class="back-btn">← Movies</button>
           <img id="np-logo" class="logo" alt="" hidden />
           <div class="np-text">
             <div id="np-name" class="np-name">No channel selected</div>
@@ -83,8 +121,55 @@
           <span id="np-status" class="np-status"></span>
           <button id="np-fav" class="star" title="Favorite (S)" aria-label="Toggle favorite" hidden>☆</button>
         </div>
+        <section id="episodes" class="episodes" aria-label="Seasons and episodes">
+          <div id="season-tabs" class="season-tabs" role="tablist" aria-label="Seasons"></div>
+          <div id="episode-list" class="episode-list"></div>
+        </section>
       </main>
     </div>
+
+    <dialog id="movie-dialog" class="movie-dialog" aria-labelledby="md-title">
+      <div id="md-backdrop" class="md-backdrop"></div>
+      <button type="button" id="md-close" class="icon-btn md-close" aria-label="Close">✕</button>
+      <div class="md-body">
+        <img id="md-poster" class="md-poster" alt="" />
+        <div class="md-info">
+          <h2 id="md-title"></h2>
+          <div id="md-facts" class="md-facts"></div>
+          <p id="md-plot" class="md-plot"></p>
+          <dl id="md-meta" class="md-meta"></dl>
+          <div class="md-actions">
+            <button type="button" id="md-play" class="primary">▶ Play Movie</button>
+            <button type="button" id="md-restart" hidden>↺ Play from start</button>
+            <button type="button" id="md-fav">☆ Favorite</button>
+            <a id="md-trailer" target="_blank" rel="noreferrer" hidden>Trailer ↗</a>
+            <a id="md-tmdb" target="_blank" rel="noreferrer" hidden>TMDb ↗</a>
+          </div>
+          <p id="md-status" class="muted" role="status"></p>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog id="series-dialog" class="movie-dialog" aria-labelledby="sd-title">
+      <div id="sd-backdrop" class="md-backdrop"></div>
+      <button type="button" id="sd-close" class="icon-btn md-close" aria-label="Close">✕</button>
+      <div class="md-body">
+        <img id="sd-poster" class="md-poster" alt="" />
+        <div class="md-info">
+          <h2 id="sd-title"></h2>
+          <div id="sd-facts" class="md-facts"></div>
+          <p id="sd-plot" class="md-plot"></p>
+          <dl id="sd-meta" class="md-meta"></dl>
+          <div class="md-actions">
+            <button type="button" id="sd-play" class="primary">▶ Start watching</button>
+            <button type="button" id="sd-fav">☆ Favorite</button>
+            <a id="sd-trailer" target="_blank" rel="noreferrer" hidden>Trailer ↗</a>
+            <a id="sd-tmdb" target="_blank" rel="noreferrer" hidden>TMDb ↗</a>
+          </div>
+          <p id="sd-status" class="muted" role="status"></p>
+        </div>
+      </div>
+    </dialog>
 
     <dialog id="settings-dialog">
       <form method="dialog">
@@ -97,6 +182,31 @@
           <span>TV guide URL (XMLTV) <span class="muted">optional</span></span>
           <input id="epg-url" type="url" placeholder="Auto: from the playlist, or the provider's xmltv.php" />
         </label>
+        <fieldset class="xtream">
+          <legend>Xtream account <span class="muted">optional: plot, cast and ratings for movies and series</span></legend>
+          <p id="xtream-detected" class="muted"></p>
+          <div class="xtream-fields">
+            <label>
+              Server
+              <input id="xtream-server" type="text" inputmode="url" autocomplete="off" spellcheck="false" placeholder="http://server:8080" />
+            </label>
+            <label>
+              Username
+              <input id="xtream-username" type="text" autocomplete="off" spellcheck="false" />
+            </label>
+            <label>
+              Password
+              <span class="password-field">
+                <input id="xtream-password" type="password" autocomplete="new-password" spellcheck="false" />
+                <button type="button" id="xtream-show" class="link-button" aria-label="Show password">Show</button>
+              </span>
+            </label>
+          </div>
+          <div class="xtream-actions">
+            <button type="button" id="xtream-test">Test connection</button>
+            <span id="xtream-status" class="xtream-status" role="status"></span>
+          </div>
+        </fieldset>
         <label class="check">
           <input id="use-proxy" type="checkbox" />
           <span>Route playlist and streams through the local proxy <span class="muted">(fixes CORS and http-on-https blocking; built into the ipman server)</span></span>

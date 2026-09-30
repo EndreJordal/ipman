@@ -8,7 +8,7 @@ import {
   type Guide,
   type Programme,
 } from './lib/epg';
-import { parseM3U, splitGroup, type Channel, type Playlist } from './lib/m3u';
+import { parseM3U, splitGroup, type Channel, type ChannelKind, type Playlist } from './lib/m3u';
 import { proxyUrl } from './lib/proxy';
 import { Player, type PlayerStatus } from './player';
 import { store } from './store';
@@ -16,7 +16,13 @@ import { BitmapSubtitles } from './bitmap-subtitles';
 import { PlayerControls } from './controls';
 import { SubtitleMenu } from './subtitles';
 import { VirtualList } from './virtual-list';
+import { MoviesView } from './movies';
+import { SeriesView } from './series';
+import { buildSeries, type Series } from './lib/series';
+import { progress, startPosition } from './progress';
 import { initUpdates } from './updates';
+import { detectAccount, withoutCredentials, type XtreamAccount } from './lib/xtream';
+import { effectiveAccount, XtreamSettings } from './xtream-settings';
 import { VodSubtitles } from './vod-subtitles';
 
 const ROW_HEIGHT = 48;
@@ -29,6 +35,9 @@ const ZAP_DELAY_MS = 300;
 const GUIDE_REFRESH_MS = 3 * 60 * 60 * 1000;
 /** How often now/next info and progress bars update. */
 const GUIDE_TICK_MS = 60 * 1000;
+/** How often the position of a movie or episode is saved while it plays. */
+const PROGRESS_SAVE_MS = 5000;
+const LIVE_SEARCH = 'Search channels   /';
 
 const byId = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const els = {
@@ -51,7 +60,10 @@ const els = {
   npStatus: byId<HTMLSpanElement>('np-status'),
   npResolution: byId<HTMLSpanElement>('np-resolution'),
   npFav: byId<HTMLButtonElement>('np-fav'),
+  backBtn: byId<HTMLButtonElement>('back-btn'),
   dialog: byId<HTMLDialogElement>('settings-dialog'),
+  movieDialog: byId<HTMLDialogElement>('movie-dialog'),
+  seriesDialog: byId<HTMLDialogElement>('series-dialog'),
   urlInput: byId<HTMLInputElement>('playlist-url'),
   proxyInput: byId<HTMLInputElement>('use-proxy'),
   epgInput: byId<HTMLInputElement>('epg-url'),
@@ -60,23 +72,71 @@ const els = {
 
 let settings = store.getSettings();
 let favorites = store.getFavorites();
-let playlist: Playlist = { channels: [], groups: [] };
+let playlist: Playlist = { channels: [] };
+/** The playlist's TV channels, for the channel list. */
+let liveChannels: Channel[] = [];
+/** The TV channel list after the dropdowns and search. */
 let visible: Channel[] = [];
 let current: Channel | null = null;
 let lastFetchedAt: number | null = null;
 let zapTimer = 0;
 let guide: Guide | null = null;
+/** The guide URL `guide` came from. */
+let guideUrl = '';
 /** Each channel's programmes, resolved once per guide/playlist pair. */
 let guideIndex = new Map<Channel, Programme[]>();
 let guideStatus = '';
 let groupParts = new Map<string, { country: string; category: string }>();
 let categoriesByCountry = new Map<string, Set<string>>();
-let guideLoading = false;
+/** TV, MOVIES or SERIES. Each section plays (and remembers) its own kind of stream. */
+let section: ChannelKind = store.getSection();
+/** The provider's Xtream account as found in the playlist (the settings can override it). */
+let detectedXtream: XtreamAccount | null = null;
+
+/** The Xtream account in use, or null: settings override the detected account field by field. */
+function xtreamAccount(): XtreamAccount | null {
+  return effectiveAccount(settings.xtream, detectedXtream);
+}
+
+/** A stream's key for favorites, progress and "last channel": its URL without the account. */
+const keyOf = (channel: Channel) => withoutCredentials(channel.url, detectedXtream);
+const fetchUrl = (url: string) => (settings.useProxy ? proxyUrl(url) : url);
 
 const bitmapSubtitles = new BitmapSubtitles(els.video, byId<HTMLCanvasElement>('subtitle-canvas'));
 const player = new Player(els.video, showStatus, bitmapSubtitles, new VodSubtitles(els.video));
 const list = new VirtualList<Channel>(els.list, ROW_HEIGHT, renderRow);
-const controls = new PlayerControls(els.playerWrap, els.video, () => current && tune(current), () => player.timeline());
+const catalogDeps = {
+  isFavorite: (key: string) => favorites.has(key),
+  toggleFavorite: (key: string) => toggleFavoriteKey(key),
+  keyOf,
+  account: () => xtreamAccount(),
+  fetchUrl,
+  search: els.search,
+  count: els.count,
+};
+/** The playlist's movies, for the MOVIES section. */
+let movieList: Channel[] = [];
+const movies = new MoviesView({
+  ...catalogDeps,
+  movies: () => movieList,
+  play: (movie, startAt) => tune(movie, 0, startAt),
+});
+/** The playlist's series, for the SERIES section. */
+let seriesList: Series[] = [];
+const series = new SeriesView({
+  ...catalogDeps,
+  series: () => seriesList,
+  play: (episode, startAt) => tune(episode, 0, startAt),
+  current: () => current,
+  changed: () => updateNowPlaying(),
+});
+// "Reload stream" keeps a movie or episode where it was (after an error too: then from the saved position).
+const controls = new PlayerControls(
+  els.playerWrap,
+  els.video,
+  () => current && tune(current, 0, current.kind === 'live' ? 0 : (playbackPosition()?.position ?? progress.get(keyOf(current))?.position ?? 0)),
+  () => player.timeline(),
+);
 new SubtitleMenu(els.video, byId<HTMLButtonElement>('subtitle-btn'), byId<HTMLDivElement>('subtitle-menu'), bitmapSubtitles);
 
 // ---------- Channel list ----------
@@ -122,7 +182,7 @@ function renderRow(channel: Channel): HTMLElement {
     text.append(show, renderProgress(now));
   }
 
-  const isFav = favorites.has(channel.url);
+  const isFav = favorites.has(keyOf(channel));
   const star = document.createElement('button');
   star.className = isFav ? 'star on' : 'star';
   star.dataset.action = 'favorite';
@@ -151,48 +211,60 @@ function renderProgress(programme: Programme): HTMLElement {
 function rebuildGuideIndex(): void {
   guideIndex = new Map();
   if (!guide) return;
-  for (const channel of playlist.channels) {
+  for (const channel of liveChannels) {
     const programmes = programmesFor(guide, channel);
     if (programmes) guideIndex.set(channel, programmes);
   }
   guideStatus =
-    `Guide: ${guideIndex.size.toLocaleString()} of ${playlist.channels.length.toLocaleString()} channels matched` +
+    `Guide: ${guideIndex.size.toLocaleString()} of ${liveChannels.length.toLocaleString()} TV channels matched` +
     ` · fetched ${new Date(guide.fetchedAt).toLocaleString()}`;
   console.info(`[ipman] ${guideStatus}`);
 }
 
-function setGuide(next: Guide): void {
+function setGuide(next: Guide | null, url: string): void {
   guide = next;
+  guideUrl = next ? url : '';
   rebuildGuideIndex();
   list.refresh();
   updateNowPlaying();
 }
 
+/** Incremented per load, so an older download can't replace a newer guide. */
+let guideRun = 0;
+/** The guide URL being downloaded, so the minute tick doesn't start it again. */
+let guideLoadingUrl = '';
+
 async function loadGuide(force = false): Promise<void> {
   const epgUrl = settings.epgUrl || guessEpgUrl(settings.playlistUrl, playlist.epgUrl);
+  // Another provider's guide doesn't fit this playlist's channels.
+  if (guide && guideUrl !== epgUrl) setGuide(null, '');
   if (!epgUrl) {
     guideStatus = 'Guide: none found for this playlist. Set a guide URL above.';
     return;
   }
-  if (guideLoading) return;
-  guideLoading = true;
+  if (!force && guideLoadingUrl === epgUrl) return;
+  const run = ++guideRun;
+  guideLoadingUrl = epgUrl;
   try {
-    const cached = await store.getCachedGuide();
-    if (cached?.url === epgUrl && !guide) setGuide(cached.guide);
+    const cached = await store.getCachedGuide().catch(() => undefined);
+    if (run !== guideRun) return;
+    if (cached?.url === epgUrl && !guide) setGuide(cached.guide, epgUrl);
     if (!force && cached?.url === epgUrl && Date.now() - cached.guide.fetchedAt < GUIDE_REFRESH_MS) return;
 
     if (!guide) guideStatus = 'Guide: loading… (the first download can take a minute)';
     const res = await fetch(epgServiceUrl(epgUrl, force));
     if (!res.ok) throw new Error((await res.text()) || `HTTP ${res.status}`);
     const fresh = (await res.json()) as Guide;
-    await store.cacheGuide({ url: epgUrl, guide: fresh });
-    setGuide(fresh);
+    if (run !== guideRun) return;
+    setGuide(fresh, epgUrl);
+    store.cacheGuide({ url: epgUrl, guide: fresh }).catch((err: Error) => console.warn(`[ipman] Could not cache the guide: ${err.message}`));
   } catch (err) {
+    if (run !== guideRun) return;
     const message = (err as Error).message;
     console.warn(`[ipman] Could not load guide: ${message}`);
     guideStatus = guide ? `${guideStatus} (refresh failed: ${message})` : `Guide: ${message}`;
   } finally {
-    guideLoading = false;
+    if (run === guideRun) guideLoadingUrl = '';
   }
 }
 
@@ -220,13 +292,15 @@ function renderNowPlayingGuide(): void {
   els.npEpg.replaceChildren(...lines);
 }
 
+// ---------- TV: dropdowns and search ----------
+
 function applyFilter(): void {
   const country = els.country.value;
   const category = els.category.value;
   const query = els.search.value.trim().toLowerCase();
-  visible = playlist.channels.filter((ch) => {
+  visible = liveChannels.filter((ch) => {
     if (country === FAVORITES) {
-      if (!favorites.has(ch.url)) return false;
+      if (!favorites.has(keyOf(ch))) return false;
     } else {
       const parts = groupParts.get(ch.group);
       if (country !== ALL && parts?.country !== country) return false;
@@ -240,8 +314,9 @@ function applyFilter(): void {
 
 function showCount(): void {
   const n = visible.length;
-  if (n) els.count.textContent = `${n.toLocaleString()} channel${n === 1 ? '' : 's'}`;
+  if (n) els.count.textContent = `${n.toLocaleString()} ${n === 1 ? 'channel' : 'channels'}`;
   else if (els.country.value === FAVORITES && !els.search.value) els.count.textContent = 'No favorites yet. Press ☆ on a channel.';
+  else if (!liveChannels.length) els.count.textContent = 'This playlist has no TV channels.';
   else els.count.textContent = 'No matching channels';
   els.count.classList.remove('error');
 }
@@ -256,9 +331,9 @@ function setOptions(select: HTMLSelectElement, options: [value: string, label: s
   select.value = options.some(([value]) => value === preferred) ? preferred! : ALL;
 }
 
-/** Fills both dropdowns from the playlist's "Country - Category" groups, restoring the saved choice. */
+/** Fills both dropdowns from the TV groups ("Country - Category"), restoring the saved choice. */
 function populateFilters(): void {
-  groupParts = new Map(playlist.groups.map((g) => [g, splitGroup(g)]));
+  groupParts = new Map([...new Set(liveChannels.map((ch) => ch.group))].map((g) => [g, splitGroup(g)]));
   categoriesByCountry = new Map();
   for (const { country, category } of groupParts.values()) {
     const categories = categoriesByCountry.get(country) ?? new Set<string>();
@@ -270,7 +345,7 @@ function populateFilters(): void {
   els.category.hidden = !hasCategories;
   els.country.ariaLabel = hasCategories ? 'Country' : 'Group';
 
-  const saved = store.getFilter();
+  const saved = store.getFilter('live');
   setOptions(
     els.country,
     [
@@ -300,9 +375,16 @@ function populateCategories(preferred = els.category.value): void {
 
 // ---------- Playback ----------
 
-function tune(channel: Channel, delay = 0): void {
+/** @param startAt seconds into a movie or episode (resume). */
+function tune(channel: Channel, delay = 0, startAt = 0): void {
+  saveProgress(true); // where the previous movie or episode was left
+  progressReady = false;
   current = channel;
-  store.setLastChannel(channel.url);
+  els.app.classList.toggle('movie-playing', channel.kind === 'movie');
+  els.app.classList.toggle('series-playing', channel.kind === 'series');
+  if (channel.kind === 'series') series.playing(channel);
+  // TV resumes its last channel; movies and episodes resume from their progress instead.
+  if (channel.kind === 'live') store.setLastChannel(keyOf(channel));
   updateNowPlaying();
   list.refresh();
   const index = visible.indexOf(channel);
@@ -310,7 +392,29 @@ function tune(channel: Channel, delay = 0): void {
 
   clearTimeout(zapTimer);
   if (delay) zapTimer = window.setTimeout(() => player.play(channel.url, settings.useProxy), delay);
-  else player.play(channel.url, settings.useProxy);
+  else player.play(channel.url, settings.useProxy, startAt);
+}
+
+/** Stops playback; in MOVIES and SERIES this brings back the card grid. */
+function stopPlayback(): void {
+  saveProgress(true);
+  progressReady = false;
+  clearTimeout(zapTimer);
+  player.stop();
+  current = null;
+  els.app.classList.remove('movie-playing', 'series-playing');
+  movies.refresh();
+  series.refresh();
+  updateNowPlaying();
+  list.refresh();
+}
+
+/** TV: plays the channel watched last, if nothing plays. */
+function resumeLastChannel(): void {
+  if (current) return;
+  const key = store.getLastChannel();
+  const match = key ? liveChannels.find((ch) => keyOf(ch) === key) : undefined;
+  if (match) tune(match);
 }
 
 function zap(step: number): void {
@@ -320,25 +424,62 @@ function zap(step: number): void {
   tune(visible[next], ZAP_DELAY_MS);
 }
 
+/** A channel's or movie's favorite key is its stream key; an episode's is its series'. */
+function favoriteKey(channel: Channel): string {
+  return (channel.kind === 'series' && series.favoriteKeyOf(channel)) || keyOf(channel);
+}
+
 function toggleFavorite(channel: Channel): void {
-  if (favorites.has(channel.url)) favorites.delete(channel.url);
-  else favorites.add(channel.url);
+  toggleFavoriteKey(favoriteKey(channel));
+}
+
+function toggleFavoriteKey(key: string): void {
+  if (favorites.has(key)) favorites.delete(key);
+  else favorites.add(key);
   store.saveFavorites(favorites);
-  if (els.country.value === FAVORITES) applyFilter();
+  if (section === 'live' && els.country.value === FAVORITES) applyFilter();
   else list.refresh();
+  movies.favoritesChanged();
+  series.favoritesChanged();
   updateNowPlaying();
 }
 
+// ---------- Watch progress (movies and episodes) ----------
+
+/** Only save once the new stream really plays: before that the video is still at 0. */
+let progressReady = false;
+let lastProgressSave = 0;
+
+function playbackPosition(): { position: number; duration: number } | null {
+  const timeline = player.timeline(); // movies converted by ffmpeg
+  if (timeline) return timeline;
+  const { currentTime, duration } = els.video;
+  return Number.isFinite(duration) && duration > 0 ? { position: currentTime, duration } : null;
+}
+
+function saveProgress(force = false): void {
+  if (!current || current.kind === 'live' || !progressReady) return;
+  if (!force && Date.now() - lastProgressSave < PROGRESS_SAVE_MS) return;
+  const at = playbackPosition();
+  if (!at) return;
+  lastProgressSave = Date.now();
+  progress.set(keyOf(current), at.position, at.duration);
+  if (current.kind === 'series') series.progressChanged(current);
+  // Pausing or switching: "Continue watching" in the sidebar may change.
+  if (force) (current.kind === 'movie' ? movies : series).refresh();
+}
+
 function updateNowPlaying(): void {
-  els.npName.textContent = current?.name ?? 'No channel selected';
-  els.npGroup.textContent = current?.group ?? '';
+  const episode = current?.kind === 'series' ? series.describe(current) : null;
+  els.npName.textContent = episode?.name ?? current?.name ?? 'No channel selected';
+  els.npGroup.textContent = episode?.detail ?? current?.group ?? '';
   els.npLogo.hidden = !current?.logo;
   if (current?.logo) els.npLogo.src = current.logo;
   els.npFav.hidden = !current;
-  const isFav = !!current && favorites.has(current.url);
+  const isFav = !!current && favorites.has(favoriteKey(current));
   els.npFav.textContent = isFav ? '★' : '☆';
   els.npFav.classList.toggle('on', isFav);
-  document.title = current ? `${current.name} · ipman` : 'ipman';
+  document.title = current ? `${episode ? `${episode.name} ${episode.detail}` : current.name} · ipman` : 'ipman';
   renderNowPlayingGuide();
 }
 
@@ -367,24 +508,54 @@ function showStatus(status: PlayerStatus): void {
 
 // ---------- Playlist loading ----------
 
+/**
+ * Favorites, progress and the last channel used to be keyed by the full stream URL, which has
+ * the account's password in it. Re-key them without it (once; then this finds nothing to do).
+ */
+function migrateKeys(): void {
+  if (!detectedXtream) return;
+  const rekey = (key: string) => (key.startsWith('series:') ? key : withoutCredentials(key, detectedXtream));
+  const rekeyed = new Set([...favorites].map(rekey));
+  if ([...rekeyed].some((key) => !favorites.has(key))) {
+    favorites = rekeyed;
+    store.saveFavorites(favorites);
+  }
+  progress.migrate(rekey);
+  const last = store.getLastChannel();
+  if (last && rekey(last) !== last) store.setLastChannel(rekey(last));
+}
+
 function setPlaylist(next: Playlist): void {
   playlist = next;
+  liveChannels = next.channels.filter((ch) => ch.kind === 'live');
+  movieList = next.channels.filter((ch) => ch.kind === 'movie');
+  seriesList = buildSeries(next.channels.filter((ch) => ch.kind === 'series'));
+  // Movie and series URLs first: their /movie/USER/PASS/ID pattern is unambiguous.
+  const samples = [...next.channels.filter((ch) => ch.kind !== 'live').slice(0, 3), ...next.channels.slice(0, 3)];
+  detectedXtream = detectAccount(settings.playlistUrl, samples.map((ch) => ch.url));
+  migrateKeys();
   rebuildGuideIndex();
   populateFilters();
-  applyFilter();
+  if (section === 'live') applyFilter();
+  movies.playlistChanged();
+  series.playlistChanged();
 
-  const lastUrl = current?.url ?? store.getLastChannel();
-  const match = lastUrl ? next.channels.find((ch) => ch.url === lastUrl) : undefined;
-  if (match && !current) {
-    tune(match);
-  } else if (current) {
+  if (current) {
     // Keep playing; just rebind to the channel object from the new playlist.
-    current = match ?? current;
+    const key = keyOf(current);
+    current = next.channels.find((ch) => keyOf(ch) === key) ?? current;
     list.refresh();
+  } else if (section === 'live') {
+    // Resume the last TV channel at startup. Movies and episodes never start by themselves.
+    resumeLastChannel();
   }
 }
 
+/** Incremented per load, so an older download can't replace a newer playlist. */
+let playlistRun = 0;
+
 async function loadPlaylist(force = false): Promise<void> {
+  const run = ++playlistRun;
   const url = settings.playlistUrl;
   if (!url) {
     showNotice('No playlist yet. Open settings (⚙) to add an M3U URL.');
@@ -392,7 +563,8 @@ async function loadPlaylist(force = false): Promise<void> {
     return;
   }
 
-  const cached = await store.getCachedPlaylist();
+  const cached = await store.getCachedPlaylist().catch(() => undefined);
+  if (run !== playlistRun) return;
   const hasCache = cached?.url === url;
   if (hasCache && !force) {
     lastFetchedAt = cached.fetchedAt;
@@ -402,15 +574,18 @@ async function loadPlaylist(force = false): Promise<void> {
 
   if (!hasCache || force) showNotice('Loading playlist…');
   try {
-    const res = await fetch(settings.useProxy ? proxyUrl(url) : url);
+    const res = await fetch(fetchUrl(url));
     if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`.trim());
     const text = await res.text();
+    if (run !== playlistRun) return;
     const parsed = parseM3U(text);
     if (!parsed.channels.length) throw new Error('no channels found. Is this an M3U playlist?');
     lastFetchedAt = Date.now();
-    await store.cachePlaylist({ url, text, fetchedAt: lastFetchedAt });
     setPlaylist(parsed);
+    // Caching is a speed-up; a full or blocked IndexedDB mustn't lose the fresh playlist.
+    store.cachePlaylist({ url, text, fetchedAt: lastFetchedAt }).catch((err: Error) => console.warn(`[ipman] Could not cache the playlist: ${err.message}`));
   } catch (err) {
+    if (run !== playlistRun) return;
     let message = `Could not load playlist: ${(err as Error).message}`;
     if (!settings.useProxy && err instanceof TypeError) message += ' (likely CORS; try enabling the proxy)';
     if (hasCache) {
@@ -427,8 +602,10 @@ function openSettings(): void {
   els.urlInput.value = settings.playlistUrl;
   els.proxyInput.checked = settings.useProxy;
   els.epgInput.value = settings.epgUrl;
+  const episodes = seriesList.reduce((n, s) => n + s.episodeCount, 0);
   const playlistInfo = playlist.channels.length
-    ? `Playlist: ${playlist.channels.length.toLocaleString()} channels in ${playlist.groups.length} groups` +
+    ? `Playlist: ${liveChannels.length.toLocaleString()} TV channels, ${movieList.length.toLocaleString()} movies, ` +
+      `${seriesList.length.toLocaleString()} series (${episodes.toLocaleString()} episodes)` +
       (lastFetchedAt ? ` · fetched ${new Date(lastFetchedAt).toLocaleString()}` : '')
     : '';
   els.settingsInfo.replaceChildren(
@@ -436,7 +613,11 @@ function openSettings(): void {
   );
   els.dialog.returnValue = '';
   els.dialog.showModal();
+  xtreamSettings.open(settings.xtream, detectedXtream);
 }
+
+// The provider's API doesn't allow browser requests (CORS), so it goes through the local proxy.
+const xtreamSettings = new XtreamSettings(fetchUrl);
 
 els.dialog.addEventListener('close', () => {
   if (els.dialog.returnValue !== 'save') return;
@@ -444,6 +625,7 @@ els.dialog.addEventListener('close', () => {
     playlistUrl: els.urlInput.value.trim(),
     useProxy: els.proxyInput.checked,
     epgUrl: els.epgInput.value.trim(),
+    xtream: xtreamSettings.value(),
   };
   store.saveSettings(settings);
   void loadPlaylist(true).then(() => loadGuide(true));
@@ -466,8 +648,50 @@ els.collapseBtn.addEventListener('click', () => setSidebarCollapsed(true, true))
 els.expandBtn.addEventListener('click', () => setSidebarCollapsed(false, true));
 setSidebarCollapsed(store.getSidebarCollapsed());
 
+// ---------- Sections: TV, MOVIES, SERIES ----------
+
+const sectionButtons = [...document.querySelectorAll<HTMLButtonElement>('.section-btn')];
+
+function showSection(): void {
+  for (const btn of sectionButtons) btn.ariaPressed = String(btn.dataset.section === section);
+  // CSS shows the channel list and player, or (MOVIES, SERIES) the categories and the card grid.
+  els.app.dataset.section = section;
+  els.backBtn.textContent = section === 'series' ? '← Series' : '← Movies';
+  els.backBtn.title = section === 'series' ? 'Back to the series' : 'Back to the movies';
+}
+
+/**
+ * Each section plays its own kind: leaving one stops what it was playing (a movie or episode
+ * keeps its position). TV picks up its last channel; MOVIES and SERIES have theirs ready to resume.
+ */
+function switchSection(next: ChannelKind): void {
+  if (next === section) return;
+  if (current && current.kind !== next) stopPlayback();
+  section = next;
+  store.setSection(next);
+  showSection();
+  els.search.value = '';
+  movies.hide();
+  series.hide();
+  if (next === 'live') {
+    els.search.placeholder = LIVE_SEARCH;
+    list.scrollToTop();
+    applyFilter();
+    resumeLastChannel();
+  } else {
+    (next === 'movie' ? movies : series).show();
+  }
+}
+
+for (const btn of sectionButtons) btn.addEventListener('click', () => switchSection(btn.dataset.section as ChannelKind));
+showSection();
+if (section === 'movie') movies.show();
+if (section === 'series') series.show();
+
+els.backBtn.addEventListener('click', stopPlayback);
+
 function onFilterChange(): void {
-  store.setFilter(els.country.value, els.category.value);
+  store.setFilter('live', els.country.value, els.category.value);
   list.scrollToTop();
   applyFilter();
 }
@@ -480,6 +704,8 @@ els.country.addEventListener('change', () => {
 els.category.addEventListener('change', onFilterChange);
 
 els.search.addEventListener('input', () => {
+  if (section === 'movie') return movies.applyFilter();
+  if (section === 'series') return series.applyFilter();
   list.scrollToTop();
   applyFilter();
 });
@@ -523,8 +749,20 @@ function updateResolution(): void {
 els.video.addEventListener('resize', updateResolution);
 els.video.addEventListener('emptied', updateResolution); // Channel switch or stop: hide until the new stream decodes.
 
+els.video.addEventListener('playing', () => (progressReady = true));
+els.video.addEventListener('timeupdate', () => saveProgress());
+els.video.addEventListener('pause', () => saveProgress(true));
+window.addEventListener('pagehide', () => saveProgress(true));
+// At the end of an episode, the next one starts (where it was left, if it was started before).
+els.video.addEventListener('ended', () => {
+  if (current?.kind !== 'series') return;
+  saveProgress(true);
+  const next = series.nextEpisode(current);
+  if (next) tune(next, 0, startPosition(progress.get(keyOf(next))));
+});
+
 document.addEventListener('keydown', (event) => {
-  if (els.dialog.open || event.ctrlKey || event.metaKey || event.altKey) return;
+  if (els.dialog.open || els.movieDialog.open || els.seriesDialog.open || event.ctrlKey || event.metaKey || event.altKey) return;
   const target = event.target as HTMLElement;
   if (target.closest('.ctl-menu')) return; // Arrow keys move through the menu there.
   if (target instanceof HTMLInputElement || target instanceof HTMLSelectElement) {
@@ -541,10 +779,12 @@ document.addEventListener('keydown', (event) => {
       break;
     case 'ArrowUp':
     case 'PageUp':
+      if (section !== 'live') return; // no channel zapping between movies or episodes
       zap(-1);
       break;
     case 'ArrowDown':
     case 'PageDown':
+      if (section !== 'live') return;
       zap(1);
       break;
     case 'f':
