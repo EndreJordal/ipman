@@ -83,8 +83,25 @@ const guideXml = (() => {
  <programme start="${fmt(now + 30 * 60e3)}" stop="${fmt(now + 90 * 60e3)}" channel="TV2.no"><title>Farmen & venner</title></programme>
  <programme start="${fmt(now - 5 * 3600e3)}" stop="${fmt(now - 4 * 3600e3)}" channel="TV2.no"><title>Too old</title></programme>
  <programme start="${fmt(now + 100 * 60e3)}" channel="TV2.no"><title>Debatten</title></programme>
+ <channel id="NRK1.no"><display-name>NRK1</display-name></channel>
+ <programme start="${fmt(now - 5 * 3600e3)}" stop="${fmt(now - 4 * 3600e3)}" channel="NRK1.no"><title>Dagsrevyen</title></programme>
 </tv>`;
 })();
+
+/** A guide whose Norwegian programmes all ended two hours ago (ranOut), or have current ones. */
+const ranOutGuideXml = (ranOut) => {
+  const now = Date.now();
+  const fmt = (ms) => new Date(ms).toISOString().replace(/[-:T]/g, '').slice(0, 14) + ' +0000';
+  const show = (channel, title, from, to) => ` <programme start="${fmt(now + from * 3600e3)}" stop="${fmt(now + to * 3600e3)}" channel="${channel}"><title>${title}</title></programme>`;
+  return ['<?xml version="1.0" encoding="UTF-8"?>', '<tv>',
+    ' <channel id="NRK1.no"><display-name>NRK1</display-name></channel>', ' <channel id="TV2.no"><display-name>TV 2 Direkte</display-name></channel>',
+    ...(ranOut
+      ? [show('NRK1.no', 'Gammelt', -4, -2), show('TV2.no', 'Gammelt', -4, -2)]
+      : [show('NRK1.no', 'Dagsrevyen', -0.5, 0.5), show('TV2.no', 'Nyhetene', -0.5, 0.5)]),
+    '</tv>'].join('\n');
+};
+/** Whether /ran-out-guide.xml serves the guide that ran out. */
+let guideRanOut = true;
 
 /** Whether /flaky-guide.xml fails, like a provider whose guide is down. */
 let guideDown = false;
@@ -92,6 +109,7 @@ let guideDown = false;
 const mediaServer = http.createServer((req, res) => {
   const url = new URL(req.url, MEDIA);
   if (url.pathname === '/guide.xml') return res.end(guideXml);
+  if (url.pathname === '/ran-out-guide.xml') return res.end(ranOutGuideXml(guideRanOut));
   if (url.pathname === '/flaky-guide.xml') return guideDown ? ((res.statusCode = 503), res.end()) : res.end(guideXml);
   if (url.pathname === '/guide.xml.gz') return res.end(gzipSync(guideXml));
   // A fake Xtream panel: get.php serves a playlist, player_api.php the account.
@@ -312,6 +330,7 @@ const scenarios = {
       check(`${f}: first title kept, entities decoded`, list[0]?.title === 'Nyhetene' && list[0]?.desc === 'Siste nytt & sport');
       check(`${f}: missing stop filled (+1 h)`, list[2] && list[2].stop - list[2].start === 3600e3);
       check(`${f}: name index`, g.names.tv2direkte === 'tv2.no');
+      check(`${f}: channel whose programmes all ended: when it ran out`, g.ended?.['nrk1.no'] > Date.now() - 4.1 * 3600e3 && !g.programmes['nrk1.no'], JSON.stringify(g.ended));
     }
   },
 
@@ -350,6 +369,32 @@ const scenarios = {
       await page.$eval('#np-epg', (el) => el.textContent));
     guideDown = false;
     check('no page errors', !page.errors.length, page.errors.join('; '));
+    await page.close();
+  },
+
+  async guideRanOut(check) {
+    const epgUrl = `${MEDIA}/ran-out-guide.xml?run=${Date.now()}`;
+    const url = playlist('ranout', [
+      { name: 'NO: NRK 1', group: 'Norway - Nasjonale', url: 'http://127.0.0.1:1/a' },
+      { name: 'NO: TV 2 Direkte', group: 'Norway - Nasjonale', url: 'http://127.0.0.1:1/b' },
+      { name: 'SE: SVT1', group: 'Sweden - Nasjonale', url: 'http://127.0.0.1:1/c' },
+    ]);
+    const status = (page) => page.$eval('#guide-status', (el) => (el.hidden ? '' : el.textContent));
+    guideRanOut = true;
+    const page = await openApp(url, 'live', epgUrl);
+    check('all countries: no ran-out notice', await waitFor(page, () => document.getElementById('guide-status').hidden, 10000), await status(page));
+    await page.select('#country-select', 'Norway');
+    check('Norway: sidebar says the guide ended, with Retry', await waitFor(page, () => /^Guide ended .* for 2 channels · Retry$/.test(document.getElementById('guide-status').textContent), 10000), await status(page));
+    await page.click('.channel');
+    check('now playing: guide for this channel ended', await waitFor(page, () => /^Guide for this channel ended .* · Retry$/.test(document.querySelector('.np-guide-note')?.textContent ?? ''), 5000),
+      await page.$eval('#np-epg', (el) => el.textContent));
+    guideRanOut = false;
+    await page.click('#guide-status .guide-retry');
+    check('provider caught up, Retry: notice gone', await waitFor(page, () => document.getElementById('guide-status').hidden, 10000), await status(page));
+    const shows = await page.$$eval('.channel-now', (xs) => xs.map((x) => x.textContent).join());
+    check('provider caught up, Retry: programmes shown', shows === 'Dagsrevyen,Nyhetene', shows);
+    check('no page errors', !page.errors.length, page.errors.join('; '));
+    guideRanOut = true;
     await page.close();
   },
 
@@ -655,9 +700,17 @@ const scenarios = {
     check('details: plot, genre, creator, cast', (await $text('#sd-plot')).startsWith('A chemistry teacher') && (await $text('#sd-facts')).includes('Drama, Crime') && (await $text('#sd-meta')).includes('Vince Gilligan'));
     check('details: seasons and episodes', (await $text('#sd-facts')).includes('2 seasons · 4 episodes'), await $text('#sd-facts'));
     check('new series: "Start watching" the first episode, with its title', (await $text('#sd-play')) === '▶ Start watching (S1 E1 · Pilot)', await $text('#sd-play'));
+    const dialogTabs = await page.$$eval('#sd-season-tabs .season-tab', (ts) => ts.map((t) => t.textContent + (t.ariaSelected === 'true' ? '*' : '')));
+    check('dialog: season tabs, the first season selected', dialogTabs.join() === 'Season 1*,Season 2', dialogTabs.join());
+    const dialogRows = await page.$$eval('#sd-episode-list .episode-title', (ts) => ts.map((t) => t.textContent));
+    check('dialog: the season\'s episodes with titles', dialogRows.join('|') === "1. Pilot|2. Cat's in the Bag...|3. ...And the Bag's in the River", dialogRows.join('|'));
+    await page.click('#sd-season-tabs .season-tab[data-season="2"]');
+    const season2 = await page.$$eval('#sd-episode-list .episode-title', (ts) => ts.map((t) => t.textContent));
+    check('dialog: another season\'s episodes', season2.join('|') === '1. Seven Thirty-Seven', season2.join('|'));
+    await page.click('#sd-season-tabs .season-tab[data-season="1"]');
     await page.click('#sd-play');
     check('the player shows and plays', await waitFor(page, () => document.getElementById('app').classList.contains('series-playing') && !document.getElementById('video').paused, 30000));
-    const tabs = await page.$$eval('.season-tab', (ts) => ts.map((t) => t.textContent + (t.ariaSelected === 'true' ? '*' : '')));
+    const tabs = await page.$$eval('#season-tabs .season-tab', (ts) => ts.map((t) => t.textContent + (t.ariaSelected === 'true' ? '*' : '')));
     check('season tabs under the player, season 1 selected', tabs.join() === 'Season 1*,Season 2', tabs.join());
     let r = await rows();
     check('episodes of the season with titles, the playing one highlighted', r.map((x) => x.title).join('|') === "1. Pilot|2. Cat's in the Bag...|3. ...And the Bag's in the River" && r[0].current, JSON.stringify(r));
@@ -685,7 +738,7 @@ const scenarios = {
     check('at the end, the next episode plays by itself', await waitFor(page, () => document.getElementById('np-group').textContent.startsWith('S1 E2') && !document.getElementById('video').paused, 40000), await $text('#np-group'));
     r = await rows();
     check('finished episode: full bar, "Watched"', r[0].bar === 100 && r[0].meta.startsWith('Watched') && r[1].current, JSON.stringify(r.slice(0, 2)));
-    await page.click('.season-tab[data-season="2"]');
+    await page.click('#season-tabs .season-tab[data-season="2"]');
     r = await rows();
     check('another season: its episodes', r.map((x) => x.title).join() === '1. Seven Thirty-Seven', JSON.stringify(r));
 
@@ -827,6 +880,29 @@ const scenarios = {
     await playMovie(page);
     check('MP2 audio: converted by ffmpeg, plays with sound', await waitFor(page, () => document.getElementById('video').webkitAudioDecodedByteCount > 0, 60000) && requests.includes('/transcode'),
       [...new Set(requests)].join(' → '));
+    await page.close();
+  },
+
+  async seriesEpisodeFromDialog(check) {
+    // Starting an episode straight from the series dialog, from another season.
+    const episodeFile = media.movieAac();
+    const lines = ['#EXTM3U'];
+    for (const [name, id] of [['Breaking Bad (ES) S01 E01', 9001], ['Breaking Bad (ES) S01 E02', 9002], ['Breaking Bad (ES) S02 E01', 9004]]) {
+      files.set(`/series/testuser/testpass/${id}.mkv`, episodeFile);
+      lines.push(`#EXTINF:-1 group-title="Series: Spanish",${name}`, `${MEDIA}/series/testuser/testpass/${id}.mkv`);
+    }
+    playlists.set('/xtream.m3u', lines.join('\n'));
+    const page = await openApp(`${MEDIA}/get.php?username=testuser&password=testpass&type=m3u_plus`, 'series');
+    await clickCard(page, '#series-grid .movie-card');
+    await page.waitForSelector('#sd-episode-list .episode', { visible: true });
+    await page.click('#sd-season-tabs .season-tab[data-season="2"]');
+    await page.click('#sd-episode-list .episode');
+    check('episode from the dialog: dialog closes, it plays', await waitFor(page, () => !document.getElementById('series-dialog').open && !document.getElementById('video').paused, 30000));
+    const playing = await page.$eval('#np-group', (e) => e.textContent);
+    check('episode from the dialog: the chosen one (S2 E1)', playing.startsWith('S2 E1'), playing);
+    const panel = await page.$$eval('#season-tabs .season-tab', (ts) => ts.map((t) => t.textContent + (t.ariaSelected === 'true' ? '*' : '')));
+    check('episode from the dialog: its season selected under the player', panel.join() === 'Season 1,Season 2*', panel.join());
+    check('no page errors', !page.errors.length, page.errors.join('; '));
     await page.close();
   },
 

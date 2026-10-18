@@ -217,7 +217,7 @@ dialog input[type='url']:focus {
 }
 
 .guide-status[data-state='failed'],
-.np-guide-note:has(.guide-retry) {
+.np-guide-note[data-state='failed'] {
   color: var(--danger);
 }
 
@@ -1576,6 +1576,19 @@ fieldset.xtream p {
 
 .season-done {
   color: var(--accent);
+}
+
+/* The same seasons and episodes in the series dialog, below the details. */
+.sd-episodes {
+  border-top: 1px solid var(--border);
+}
+
+.sd-episodes .season-tabs {
+  padding: 10px 24px 0;
+}
+
+.sd-episodes .episode-list {
+  padding: 12px 24px 24px;
 }
 
 .episode-list {

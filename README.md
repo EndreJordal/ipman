@@ -105,6 +105,7 @@ The dev server uses port 5174 so it can run next to an installed ipman on 5173. 
   - A started movie gets a blue progress bar and **Resume** (or **Play from start**).
 - **SERIES:** the playlist's episodes grouped into series, as cards with their number of seasons and episodes.
   - **Resume watching (S2 E5 · Title)** in the details dialog: the episode you left, where you left it, or the next one.
+  - The details dialog also lists every season's episodes: pick a season and start any episode.
   - While an episode plays, its seasons and episodes are listed under the player. Each episode has a blue bar for how much of it you've seen. The next episode starts by itself.
 - **Continue watching:** MOVIES and SERIES each list what you've started, most recent first.
 - **Xtream account** (optional, in settings): most providers' playlists come with an Xtream API, found automatically from the playlist URL. It adds ratings, covers, plots, cast and episode titles, and shows your subscription's expiry and connections.
@@ -168,6 +169,8 @@ The app shows the current programme under each channel name, and the current and
 - The browser caches the result in IndexedDB and downloads it again every 3 hours.
 
 **When the guide fails.** The TV sidebar and the now-playing bar say so: "Guide unavailable" when there's no guide, or "Guide from 14:05 · refresh failed" when an older copy is shown. Hover for the error, or press **Retry** to download it again straight from the provider. Failed downloads are also retried by themselves after 1, 5 and 15 minutes, then every hour. A channel the guide doesn't know shows "No guide info for this channel".
+
+**When the provider's guide runs out.** Sometimes the provider stops updating part of its guide: it still lists the channels, but their last programme ended hours ago. The server remembers when each such channel's guide ran out. If that happens to your channels (favorites, the channel playing, and the sidebar's list when it's filtered to a country), the sidebar says "Guide ended 03:44 for 8 channels" and the now-playing bar "Guide for this channel ended 03:44". ipman then gets the guide again straight from the provider after 15 and 30 minutes, 1 and 2 hours, then every 3 hours, until it has programmes again. **Retry** does it right away.
 
 **Matching.** Channels are matched to the guide by `tvg-id`, falling back to a normalized channel name. The settings dialog shows how many channels matched.
 

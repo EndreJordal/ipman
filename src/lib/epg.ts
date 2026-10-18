@@ -18,6 +18,11 @@ export interface Guide {
   programmes: Record<string, Programme[]>;
   /** normalizeName(display name) → channel id, for channels whose tvg-id doesn't match. */
   names: Record<string, string>;
+  /**
+   * Channels whose programmes all ended before the guide was made, with the last one's stop
+   * time: the provider's guide for them ran out. Missing in guides from before 0.3.2.
+   */
+  ended?: Record<string, number>;
 }
 
 export function epgServiceUrl(epgUrl: string, force = false): string {
@@ -53,11 +58,22 @@ export function normalizeName(name: string): string {
     .replace(/[^\p{L}\p{N}]/gu, '');
 }
 
+/** The guide's id for a channel: its tvg-id if the guide has it, otherwise by display name. */
+function guideIdFor(guide: Guide, channel: { name: string; tvgId?: string }): string | undefined {
+  const tvgId = channel.tvgId?.toLowerCase();
+  if (tvgId && (guide.programmes[tvgId] || guide.ended?.[tvgId])) return tvgId;
+  return guide.names[normalizeName(channel.name)];
+}
+
 export function programmesFor(guide: Guide, channel: { name: string; tvgId?: string }): Programme[] | undefined {
-  const byId = channel.tvgId && guide.programmes[channel.tvgId.toLowerCase()];
-  if (byId) return byId;
-  const id = guide.names[normalizeName(channel.name)];
+  const id = guideIdFor(guide, channel);
   return id ? guide.programmes[id] : undefined;
+}
+
+/** When the guide's programmes for a channel ran out, if they all ended before it was made. */
+export function guideEndedFor(guide: Guide, channel: { name: string; tvgId?: string }): number | undefined {
+  const id = guideIdFor(guide, channel);
+  return id ? guide.ended?.[id] : undefined;
 }
 
 export function nowAndNext(programmes: Programme[] | undefined, time = Date.now()): { now?: Programme; next?: Programme } {

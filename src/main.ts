@@ -4,6 +4,7 @@ import {
   GUIDE_ERROR_HEADER,
   guessEpgUrl,
   nowAndNext,
+  guideEndedFor,
   programmesFor,
   progressOf,
   type Guide,
@@ -38,6 +39,8 @@ const GUIDE_REFRESH_MS = 3 * 60 * 60 * 1000;
 const GUIDE_MIN_GAP_MS = 15 * 60 * 1000;
 /** Delays before retrying a failed guide download: 1, 5 and 15 minutes, then every hour. */
 const GUIDE_RETRY_MS = [1, 5, 15, 60].map((minutes) => minutes * 60 * 1000);
+/** While the guide for your channels has run out: get it again after 15 and 30 minutes, 1 and 2 hours, then every 3. */
+const GUIDE_RAN_OUT_RETRY_MS = [15, 30, 60, 120, 180].map((minutes) => minutes * 60 * 1000);
 /** How often now/next info and progress bars update. */
 const GUIDE_TICK_MS = 60 * 1000;
 /** How often the position of a movie or episode is saved while it plays. */
@@ -91,6 +94,8 @@ let guide: Guide | null = null;
 let guideUrl = '';
 /** Each channel's programmes, resolved once per guide/playlist pair. */
 let guideIndex = new Map<Channel, Programme[]>();
+/** Channels the guide knows whose programmes had all ended when it was made: when they ran out. */
+let guideEnded = new Map<Channel, number>();
 /** "Guide: … of … TV channels matched · fetched …", for the settings dialog. */
 let guideSummary = '';
 /** none: no guide URL for this playlist. failed: the last load failed (`guide` may be an older copy). */
@@ -101,6 +106,9 @@ let guideError = '';
 let guideFailures = 0;
 /** When the minute tick loads the guide again. */
 let nextGuideLoad = Infinity;
+/** Reloads in a row because the guide for your channels ran out, and when the last one started. */
+let ranOutLoads = 0;
+let lastRanOutLoad = 0;
 let groupParts = new Map<string, { country: string; category: string }>();
 let categoriesByCountry = new Map<string, Set<string>>();
 /** TV, MOVIES or SERIES. Each section plays (and remembers) its own kind of stream. */
@@ -225,10 +233,15 @@ function renderProgress(programme: Programme): HTMLElement {
 
 function rebuildGuideIndex(): void {
   guideIndex = new Map();
+  guideEnded = new Map();
   if (!guide) return;
   for (const channel of liveChannels) {
     const programmes = programmesFor(guide, channel);
     if (programmes) guideIndex.set(channel, programmes);
+    else {
+      const ended = guideEndedFor(guide, channel);
+      if (ended) guideEnded.set(channel, ended);
+    }
   }
   guideSummary =
     `Guide: ${guideIndex.size.toLocaleString()} of ${liveChannels.length.toLocaleString()} TV channels matched` +
@@ -242,6 +255,7 @@ function setGuide(next: Guide | null, url: string): void {
   rebuildGuideIndex();
   list.refresh();
   updateNowPlaying();
+  renderGuideStatus();
 }
 
 /** The guide line in the settings dialog. */
@@ -259,17 +273,52 @@ function formatWhen(ms: number): string {
   return `${date.toLocaleDateString([], { day: 'numeric', month: 'short' })} ${formatTime(ms)}`;
 }
 
-/** The guide's status for the sidebar and the now-playing area, or nothing while all is well. */
-function renderGuideNotice(): Node[] {
-  let text = '';
-  if (guideState === 'loading') text = guide ? 'Guide: retrying…' : 'Guide loading…';
-  else if (guideState === 'failed') text = guide ? `Guide from ${formatWhen(guide.fetchedAt)} · refresh failed` : 'Guide unavailable';
-  if (!text) return [];
+/** Whether the guide knows a channel at all, current programmes or not. */
+function inGuide(channel: Channel): boolean {
+  return guideIndex.has(channel) || guideEnded.has(channel);
+}
 
+/**
+ * When the provider's guide for a channel ran out: it knows the channel, but has nothing on now
+ * or later. (A gap between programmes doesn't count.)
+ */
+function guideEndedAt(channel: Channel, time = Date.now()): number | undefined {
+  const programmes = guideIndex.get(channel);
+  if (!programmes) return guideEnded.get(channel);
+  const last = programmes[programmes.length - 1];
+  return last.stop <= time ? last.stop : undefined;
+}
+
+/**
+ * The channels you watch, as far as ipman can tell: favorites, the one playing, and the
+ * sidebar's list unless it shows all countries.
+ */
+function yourChannels(): Set<Channel> {
+  const channels = new Set(liveChannels.filter((ch) => favorites.has(keyOf(ch))));
+  if (current?.kind === 'live') channels.add(current);
+  if (els.country.value !== ALL) for (const ch of visible) channels.add(ch);
+  return channels;
+}
+
+/** Of these channels, how many have a guide that ran out, and the latest time one ran out. */
+function ranOut(channels: Iterable<Channel>): { count: number; at: number } {
+  const time = Date.now();
+  let count = 0;
+  let at = 0;
+  for (const channel of channels) {
+    const ended = guideEndedAt(channel, time);
+    if (ended === undefined) continue;
+    count++;
+    at = Math.max(at, ended);
+  }
+  return { count, at };
+}
+
+/** A notice with a Retry button. */
+function noticeWithRetry(text: string, title: string): Node[] {
   const label = document.createElement('span');
   label.textContent = text;
-  if (guideState === 'failed') label.title = guideError;
-  if (guideState !== 'failed') return [label];
+  label.title = title;
   const retry = document.createElement('button');
   retry.type = 'button';
   retry.className = 'guide-retry';
@@ -278,13 +327,37 @@ function renderGuideNotice(): Node[] {
   return [label, document.createTextNode(' · '), retry];
 }
 
-function setGuideState(state: GuideState, error = ''): void {
-  guideState = state;
-  guideError = error;
-  const notice = renderGuideNotice();
+const RAN_OUT_TITLE = 'The provider’s guide has no programmes after this. ipman gets it again by itself every so often.';
+
+/** The guide's loading or failure status for the sidebar and the now-playing area, or nothing. */
+function renderGuideNotice(): Node[] {
+  if (guideState === 'loading') {
+    return [Object.assign(document.createElement('span'), { textContent: guide ? 'Guide: retrying…' : 'Guide loading…' })];
+  }
+  if (guideState !== 'failed') return [];
+  return noticeWithRetry(guide ? `Guide from ${formatWhen(guide.fetchedAt)} · refresh failed` : 'Guide unavailable', guideError);
+}
+
+/** The sidebar's guide status: loading or failed, or the guide for the listed channels ran out. */
+function renderGuideStatus(): void {
+  let notice = renderGuideNotice();
+  let state: string = guideState;
+  if (!notice.length && guide && els.country.value !== ALL) {
+    const { count, at } = ranOut(visible);
+    if (count) {
+      notice = noticeWithRetry(`Guide ended ${formatWhen(at)} for ${count === 1 ? '1 channel' : `${count.toLocaleString()} channels`}`, RAN_OUT_TITLE);
+      state = 'ended';
+    }
+  }
   els.guideStatus.hidden = !notice.length;
   els.guideStatus.dataset.state = state;
   els.guideStatus.replaceChildren(...notice);
+}
+
+function setGuideState(state: GuideState, error = ''): void {
+  guideState = state;
+  guideError = error;
+  renderGuideStatus();
   renderNowPlayingGuide();
 }
 
@@ -293,13 +366,34 @@ function scheduleGuide(at: number): void {
   nextGuideLoad = at;
 }
 
+/**
+ * While the guide for your channels has run out, gets it again straight from the provider (past
+ * the server's copy), at growing intervals, in case the provider has caught up.
+ */
+function checkGuideRanOut(): void {
+  if (!guide || guideState !== 'ok' || guideLoadingUrl) return;
+  if (!ranOut(yourChannels()).count) {
+    ranOutLoads = 0;
+    return;
+  }
+  const delay = GUIDE_RAN_OUT_RETRY_MS[Math.min(ranOutLoads, GUIDE_RAN_OUT_RETRY_MS.length - 1)];
+  if (Date.now() < Math.max(guide.fetchedAt, lastRanOutLoad) + delay) return;
+  ranOutLoads++;
+  lastRanOutLoad = Date.now();
+  console.info('[ipman] The guide for your channels ran out: getting it again from the provider');
+  void loadGuide(true, false);
+}
+
 /** Incremented per load, so an older download can't replace a newer guide. */
 let guideRun = 0;
 /** The guide URL being downloaded, so the minute tick doesn't start it again. */
 let guideLoadingUrl = '';
 
-/** `force` (a Retry, or saved settings) skips the caches and starts the retry delays over. */
-async function loadGuide(force = false): Promise<void> {
+/**
+ * `force` skips the caches. A Retry or saved settings (`userAction`) also starts the retry
+ * delays over and shows that it's loading; a background reload stays quiet.
+ */
+async function loadGuide(force = false, userAction = force): Promise<void> {
   const epgUrl = settings.epgUrl || guessEpgUrl(settings.playlistUrl, playlist.epgUrl);
   // Another provider's guide doesn't fit this playlist's channels.
   if (guide && guideUrl !== epgUrl) setGuide(null, '');
@@ -309,7 +403,11 @@ async function loadGuide(force = false): Promise<void> {
     return;
   }
   if (!force && guideLoadingUrl === epgUrl) return;
-  if (force) guideFailures = 0;
+  if (userAction) {
+    guideFailures = 0;
+    ranOutLoads = 0;
+    lastRanOutLoad = Date.now();
+  }
   const run = ++guideRun;
   guideLoadingUrl = epgUrl;
   try {
@@ -322,8 +420,7 @@ async function loadGuide(force = false): Promise<void> {
       return;
     }
 
-    // A background refresh keeps quiet; a first download or a Retry says what it's doing.
-    if (!guide || force) setGuideState('loading');
+    if (!guide || userAction) setGuideState('loading');
     const res = await fetch(epgServiceUrl(epgUrl, force));
     if (!res.ok) throw new Error((await res.text()) || `HTTP ${res.status}`);
     const fresh = (await res.json()) as Guide;
@@ -379,12 +476,15 @@ function renderNowPlayingGuide(): void {
     lines.push(line);
   }
   if (live && !now && !next) {
-    // Say why there's nothing: the guide is missing or out of date (a refresh would help), or it
-    // doesn't know this channel at all (a refresh wouldn't).
-    const notice = !guide || guideIndex.has(current!) ? renderGuideNotice() : [];
+    // Say why there's nothing: the guide is missing or failed, the provider's guide for this
+    // channel ran out (a refresh may help), or it doesn't know this channel (a refresh won't).
+    let notice = !guide || inGuide(current!) ? renderGuideNotice() : [];
+    const ended = guide && !notice.length ? guideEndedAt(current!) : undefined;
+    if (ended) notice = noticeWithRetry(`Guide for this channel ended ${formatWhen(ended)}`, RAN_OUT_TITLE);
     if (notice.length || guide) {
       const line = document.createElement('div');
       line.className = 'np-guide-note';
+      if (!ended) line.dataset.state = guideState;
       if (notice.length) line.append(...notice);
       else line.textContent = 'No guide info for this channel';
       lines.push(line);
@@ -412,6 +512,7 @@ function applyFilter(): void {
   });
   list.setItems(visible);
   showCount();
+  renderGuideStatus();
 }
 
 function showCount(): void {
@@ -925,6 +1026,8 @@ setInterval(() => {
   if (!guide) return;
   list.refresh();
   renderNowPlayingGuide();
+  renderGuideStatus();
+  checkGuideRanOut();
 }, GUIDE_TICK_MS);
 
 void loadPlaylist().then(() => loadGuide());

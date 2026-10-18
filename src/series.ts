@@ -1,6 +1,7 @@
 /**
  * The SERIES section: categories in the sidebar, series as poster cards, a details dialog with
- * "Resume watching", and while an episode plays, the seasons and episodes under the player.
+ * "Resume watching" and every season's episodes, and while an episode plays, the seasons and
+ * episodes under the player.
  *
  * Series, seasons and episodes come from the M3U (see lib/series.ts). With an Xtream account,
  * cards get covers and ratings (one list for the whole catalogue, cached for 12 hours), and
@@ -64,6 +65,8 @@ export class SeriesView extends CatalogView<Series> {
   /** The series whose seasons and episodes show under the player, and the season shown. */
   private panelSeries: Series | null = null;
   private panelSeason = 1;
+  /** The season shown in the details dialog. */
+  private dialogSeason = 1;
 
   private els = {
     backdrop: byId('sd-backdrop'),
@@ -75,6 +78,8 @@ export class SeriesView extends CatalogView<Series> {
     play: byId<HTMLButtonElement>('sd-play'),
     seasonTabs: byId('season-tabs'),
     episodeList: byId('episode-list'),
+    dialogSeasonTabs: byId('sd-season-tabs'),
+    dialogEpisodeList: byId('sd-episode-list'),
   };
 
   constructor(private seriesDeps: SeriesDeps) {
@@ -116,16 +121,28 @@ export class SeriesView extends CatalogView<Series> {
       this.dialog.close();
       if (target) this.seriesDeps.play(target.episode.channel, target.startAt);
     });
-    this.els.seasonTabs.addEventListener('click', (event) => {
-      const tab = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-season]');
-      if (!tab) return;
-      this.panelSeason = Number(tab.dataset.season);
+    this.bindSeasons(this.els.seasonTabs, this.els.episodeList, (season) => {
+      this.panelSeason = season;
       this.renderPanel();
     });
-    this.els.episodeList.addEventListener('click', (event) => {
+    this.bindSeasons(this.els.dialogSeasonTabs, this.els.dialogEpisodeList, (season) => {
+      this.dialogSeason = season;
+      this.renderDialogEpisodes();
+    });
+  }
+
+  /** Season tabs switch the season; an episode plays (closing the dialog, if it's in there). */
+  private bindSeasons(tabs: HTMLElement, list: HTMLElement, selectSeason: (season: number) => void): void {
+    tabs.addEventListener('click', (event) => {
+      const tab = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-season]');
+      if (tab) selectSeason(Number(tab.dataset.season));
+    });
+    list.addEventListener('click', (event) => {
       const row = (event.target as HTMLElement).closest<HTMLElement>('[data-key]');
       const entry = row && this.episodes.get(row.dataset.key!);
-      if (entry) this.seriesDeps.play(entry.episode.channel, startPosition(this.progressOf(entry.episode)));
+      if (!entry) return;
+      if (this.dialog.contains(list)) this.dialog.close();
+      this.seriesDeps.play(entry.episode.channel, startPosition(this.progressOf(entry.episode)));
     });
   }
 
@@ -250,6 +267,8 @@ export class SeriesView extends CatalogView<Series> {
   }
 
   protected openDetails(series: Series): void {
+    // Open on the season "Start/Resume watching" points to.
+    this.dialogSeason = resumeTarget(series, this.progressOf)?.episode.season ?? series.seasons[0]?.number ?? 1;
     const run = this.showDialog(series);
     this.showDetails(series, this.details.get(series.key));
     this.els.play.focus();
@@ -306,6 +325,12 @@ export class SeriesView extends CatalogView<Series> {
 
     this.renderLinks(details?.trailer, details?.tmdbId, 'tv');
     this.renderResumeButton(series);
+    this.renderDialogEpisodes();
+  }
+
+  private renderDialogEpisodes(): void {
+    const series = this.dialogItem;
+    if (series) this.dialogSeason = this.renderSeasons(series, this.dialogSeason, this.els.dialogSeasonTabs, this.els.dialogEpisodeList);
   }
 
   /** "▶ Resume watching (S2 E5 · Title)", "▶ Start watching (S1 E1 · Pilot)" or "▶ Watch again (…)". */
@@ -375,9 +400,18 @@ export class SeriesView extends CatalogView<Series> {
       this.els.episodeList.replaceChildren();
       return;
     }
-    const season = series.seasons.find((s) => s.number === this.panelSeason) ?? series.seasons[0];
-    this.panelSeason = season.number;
-    this.els.seasonTabs.replaceChildren(
+    this.panelSeason = this.renderSeasons(series, this.panelSeason, this.els.seasonTabs, this.els.episodeList);
+  }
+
+  /** Renders a series' season tabs and one season's episodes; returns the season shown. */
+  private renderSeasons(series: Series, seasonNumber: number, tabs: HTMLElement, list: HTMLElement): number {
+    const season = series.seasons.find((s) => s.number === seasonNumber) ?? series.seasons[0];
+    if (!season) {
+      tabs.replaceChildren();
+      list.replaceChildren();
+      return seasonNumber;
+    }
+    tabs.replaceChildren(
       ...series.seasons.map((s) => {
         const tab = document.createElement('button');
         tab.type = 'button';
@@ -393,7 +427,8 @@ export class SeriesView extends CatalogView<Series> {
         return tab;
       }),
     );
-    this.els.episodeList.replaceChildren(...season.episodes.map((ep) => this.renderEpisode(series, ep)));
+    list.replaceChildren(...season.episodes.map((ep) => this.renderEpisode(series, ep)));
+    return season.number;
   }
 
   private scrollToCurrent(behavior: ScrollBehavior): void {

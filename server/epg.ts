@@ -82,6 +82,8 @@ async function parseXmltv(chunks: AsyncIterable<Uint8Array>): Promise<Guide> {
   const to = now + KEEP_AHEAD_MS;
   const programmes: Record<string, Programme[]> = {};
   const names: Record<string, string> = {};
+  /** Each channel's latest stop among programmes that ended before the window. */
+  const lastStop: Record<string, number> = {};
 
   let channelId: string | null = null;
   let programme: (Programme & { channel: string }) | null = null;
@@ -104,6 +106,10 @@ async function parseXmltv(chunks: AsyncIterable<Uint8Array>): Promise<Guide> {
             const stop = parseXmltvTime(attrs.stop) ?? NaN;
             const inWindow = start !== null && start < to && (Number.isNaN(stop) ? start > from - DEFAULT_DURATION_MS : stop > from);
             programme = attrs.channel && inWindow ? { channel: attrs.channel.toLowerCase(), start, stop, title: '' } : null;
+            if (attrs.channel && !inWindow && start !== null && start < to) {
+              const id = attrs.channel.toLowerCase();
+              lastStop[id] = Math.max(lastStop[id] ?? 0, Number.isNaN(stop) ? start + DEFAULT_DURATION_MS : stop);
+            }
             break;
           }
           case 'title':
@@ -150,10 +156,16 @@ async function parseXmltv(chunks: AsyncIterable<Uint8Array>): Promise<Guide> {
     });
     const kept = list.filter((p, i) => p.stop > from && p.start !== list[i - 1]?.start);
     if (kept.length) programmes[id] = kept;
-    else delete programmes[id];
+    else {
+      delete programmes[id];
+      lastStop[id] = Math.max(lastStop[id] ?? 0, ...list.map((p) => p.stop));
+    }
   }
+  // Channels whose programmes all ended: the provider's guide for them ran out.
+  const ended: Record<string, number> = {};
+  for (const [id, stop] of Object.entries(lastStop)) if (!programmes[id]) ended[id] = stop;
 
-  return { fetchedAt: now, programmes, names };
+  return { fetchedAt: now, programmes, names, ended };
 }
 
 async function downloadGuide(url: string): Promise<CacheEntry> {
@@ -195,7 +207,9 @@ async function readCache(url: string): Promise<CacheEntry | undefined> {
   }
   try {
     const json = await readFile(cacheFile(url), 'utf8');
-    const entry = { fetchedAt: (JSON.parse(json) as Guide).fetchedAt, json };
+    const guide = JSON.parse(json) as Guide;
+    // Guides saved before 0.3.2 lack `ended`: download again, but keep them in case that fails.
+    const entry = { fetchedAt: guide.ended ? guide.fetchedAt : 0, json };
     remember(url, entry);
     return entry;
   } catch {
