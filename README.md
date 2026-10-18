@@ -49,7 +49,7 @@ powershell -ExecutionPolicy Bypass -File install-ipman.ps1
 
 When a new version is out, ipman shows a dot on the settings gear, and the settings dialog shows the command to copy. It's the same install command: **running it again updates ipman in place**. Settings and favorites are stored in your browser and are kept.
 
-You can switch off the update check under Settings → *Check for updates*. The check contacts GitHub at most twice a day and sends nothing but a normal web request.
+You can switch off the update check under Settings → *Check for updates*. The check contacts GitHub at most once an hour and sends nothing but a normal web request. **Check now**, next to the version in the settings, asks right away, even with the setting off.
 
 ### Uninstalling
 
@@ -85,6 +85,7 @@ The dev server uses port 5174 so it can run next to an installed ipman on 5173. 
 | `npm run package` | Builds the release package into `build/release/` |
 | `npm run test:e2e` | Browser tests against a running ipman (`-- --base http://127.0.0.1:5174`) |
 | `powershell -File tests\install-smoke.ps1` | Installs `build/release` in a temporary folder, checks it, uninstalls |
+| `node tests/update-check.mjs` | Runs the packaged server (after `npm run package`) against a fake GitHub to test the update check and **Check now** |
 
 ### Releasing
 

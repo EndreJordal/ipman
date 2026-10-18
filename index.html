@@ -219,7 +219,11 @@
         <p id="settings-info" class="muted"></p>
         <section class="about">
           <div class="about-row">
-            <span id="app-version" class="muted"></span>
+            <span class="version-line">
+              <span id="app-version" class="muted"></span>
+              <button type="button" id="check-now" class="link-button" hidden>Check now</button>
+              <span id="check-result" class="muted" role="status"></span>
+            </span>
             <label class="check inline">
               <input id="check-updates" type="checkbox" />
               <span>Check for updates</span>

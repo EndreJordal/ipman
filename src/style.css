@@ -931,6 +931,22 @@ dialog label.check.inline {
   font-size: 12px;
 }
 
+.version-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 6px;
+  font-size: 12px;
+}
+
+.version-line .link-button {
+  padding: 0;
+}
+
+.version-line .link-button[hidden] {
+  display: none;
+}
+
 .update-actions {
   display: flex;
   justify-content: space-between;

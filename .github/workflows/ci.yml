@@ -22,3 +22,5 @@ jobs:
       - name: Installer smoke test
         shell: powershell
         run: .\tests\install-smoke.ps1
+      - name: Update check test
+        run: node tests/update-check.mjs

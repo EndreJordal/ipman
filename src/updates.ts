@@ -11,11 +11,14 @@ interface VersionInfo {
   latest: string | null;
   releaseUrl: string | null;
   updateAvailable: boolean;
+  /** When the server last asked GitHub (null: not yet), and why that failed. */
+  checkedAt: number | null;
+  checkError: string | null;
   installCommand: string;
 }
 
-/** The server caches GitHub's answer for 12 hours; asking it more often costs nothing. */
-const RECHECK_MS = 6 * 60 * 60 * 1000;
+/** The server asks GitHub at most once an hour; asking the server more often costs nothing. */
+const RECHECK_MS = 15 * 60 * 1000;
 
 const byId = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -30,13 +33,19 @@ export function initUpdates(settingsButton: HTMLElement): void {
     copy: byId<HTMLButtonElement>('copy-command'),
     releaseLink: byId<HTMLAnchorElement>('release-link'),
     skip: byId<HTMLButtonElement>('skip-version'),
+    checkNow: byId<HTMLButtonElement>('check-now'),
+    checkResult: byId('check-result'),
   };
   let info: VersionInfo | null = null;
+  /** "Check now" was used: show what it found, even with update checks off. */
+  let checkedNow = false;
 
   const render = () => {
     els.version.textContent = info ? `ipman ${info.version}${info.packaged ? '' : ' (dev)'}` : '';
+    // A checkout is always the newest code: nothing to check.
+    els.checkNow.hidden = !info?.packaged;
     els.checkUpdates.checked = store.getCheckUpdates();
-    const show = !!info?.updateAvailable && store.getCheckUpdates() && info.latest !== store.getSkippedVersion();
+    const show = !!info?.updateAvailable && (store.getCheckUpdates() || checkedNow) && info.latest !== store.getSkippedVersion();
     els.notice.hidden = !show;
     settingsButton.classList.toggle('has-update', show);
     settingsButton.title = show ? 'Settings: an update is available' : 'Settings';
@@ -49,9 +58,10 @@ export function initUpdates(settingsButton: HTMLElement): void {
     if (info.releaseUrl) els.releaseLink.href = info.releaseUrl;
   };
 
-  const check = async () => {
+  /** `now`: the "Check now" link, which asks GitHub right away, whatever the setting. */
+  const check = async (now = false) => {
     try {
-      const res = await fetch(`/version${store.getCheckUpdates() ? '?check=1' : ''}`);
+      const res = await fetch(`/version${now ? '?check=now' : store.getCheckUpdates() ? '?check=1' : ''}`);
       if (res.ok) info = (await res.json()) as VersionInfo;
     } catch {
       // Server restarting; try again next round.
@@ -62,6 +72,21 @@ export function initUpdates(settingsButton: HTMLElement): void {
   els.checkUpdates.addEventListener('change', () => {
     store.setCheckUpdates(els.checkUpdates.checked);
     void check();
+  });
+  els.checkNow.addEventListener('click', async () => {
+    els.checkNow.disabled = true;
+    els.checkNow.textContent = 'Checking…';
+    els.checkResult.textContent = '';
+    const before = info;
+    checkedNow = true;
+    await check(true);
+    els.checkNow.disabled = false;
+    els.checkNow.textContent = 'Check now';
+    if (!info || info === before) els.checkResult.textContent = 'Could not reach the ipman server.';
+    else if (info.checkError) els.checkResult.textContent = `Could not check: ${info.checkError}`;
+    else if (!info.updateAvailable) els.checkResult.textContent = 'Up to date.';
+    // The notice shows a new version, unless it was skipped.
+    else if (info.latest === store.getSkippedVersion()) els.checkResult.textContent = `ipman ${info.latest} is available (skipped).`;
   });
   els.copy.addEventListener('click', () => {
     if (!info) return;
