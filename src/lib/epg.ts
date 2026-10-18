@@ -1,5 +1,7 @@
 /** Path served by the guide service in server/epg.ts. */
 export const EPG_PATH = '/epg';
+/** Set (URI-encoded) when the guide service sends an older copy because the download failed. */
+export const GUIDE_ERROR_HEADER = 'x-guide-error';
 
 export interface Programme {
   /** Epoch milliseconds (UTC). */

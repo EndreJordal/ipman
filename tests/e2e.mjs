@@ -64,6 +64,7 @@ const media = {
     fixture('movie-eac3.mkv', [...testsrc('1280x720'), '-i', 'no.srt', '-map', '0', '-map', '1', '-map', '2', '-t', '150', ...x264, '-crf', '30',
       '-c:a', 'eac3', '-ac', '6', '-c:s', 'srt', '-metadata:s:s:0', 'language=nor'],
       () => writeFileSync(path.join(FIXTURES, 'no.srt'), srt(30, 5, (n) => `Norsk linje ${n}`))),
+  movieMp2: () => fixture('movie-mp2.mkv', [...testsrc('1280x720'), '-t', '60', ...x264, '-crf', '30', '-c:a', 'mp2', '-b:a', '192k']),
   heavyEac3: () => fixture('heavy-eac3.mkv', [...testsrc('1920x1080'), '-t', '100', '-vf', 'noise=alls=30:allf=t', ...x264, '-b:v', '40M', '-maxrate', '40M', '-bufsize', '80M', '-c:a', 'eac3', '-ac', '6']),
 };
 
@@ -85,9 +86,13 @@ const guideXml = (() => {
 </tv>`;
 })();
 
+/** Whether /flaky-guide.xml fails, like a provider whose guide is down. */
+let guideDown = false;
+
 const mediaServer = http.createServer((req, res) => {
   const url = new URL(req.url, MEDIA);
   if (url.pathname === '/guide.xml') return res.end(guideXml);
+  if (url.pathname === '/flaky-guide.xml') return guideDown ? ((res.statusCode = 503), res.end()) : res.end(guideXml);
   if (url.pathname === '/guide.xml.gz') return res.end(gzipSync(guideXml));
   // A fake Xtream panel: get.php serves a playlist, player_api.php the account.
   if (url.pathname === '/get.php') return res.end(playlists.get('/xtream.m3u') ?? '#EXTM3U\n');
@@ -184,16 +189,16 @@ function playlist(name, channels) {
 
 let browser;
 
-async function openApp(playlistUrl, section = 'live') {
+async function openApp(playlistUrl, section = 'live', epgUrl = '') {
   const context = await browser.createBrowserContext(); // fresh profile: empty localStorage
   const page = await context.newPage();
   page.errors = [];
   page.on('pageerror', (e) => page.errors.push(e.message));
   await page.goto(`${BASE}/`);
-  await page.evaluate((url, sec) => {
-    localStorage.setItem('ipman.settings', JSON.stringify({ playlistUrl: url, useProxy: true, epgUrl: '' }));
+  await page.evaluate((url, sec, epg) => {
+    localStorage.setItem('ipman.settings', JSON.stringify({ playlistUrl: url, useProxy: true, epgUrl: epg }));
     localStorage.setItem('ipman.section', JSON.stringify(sec));
-  }, playlistUrl, section);
+  }, playlistUrl, section, epgUrl);
   await page.reload();
   await page.waitForSelector(ready[section]);
   page.close = ((close) => async () => { await close.call(page); await context.close(); })(page.close);
@@ -308,6 +313,44 @@ const scenarios = {
       check(`${f}: missing stop filled (+1 h)`, list[2] && list[2].stop - list[2].start === 3600e3);
       check(`${f}: name index`, g.names.tv2direkte === 'tv2.no');
     }
+  },
+
+  async guideStatus(check) {
+    // A new URL each run, so the server's guide cache from earlier runs doesn't count.
+    const epgUrl = `${MEDIA}/flaky-guide.xml?run=${Date.now()}`;
+    const raw = (force) => fetch(`${BASE}/epg?url=${encodeURIComponent(epgUrl)}${force ? '&force=1' : ''}`);
+    const url = playlist('guide', [
+      { name: 'TV 2 Direkte', group: 'Norway - Nyheter', url: 'http://127.0.0.1:1/a' },
+      { name: 'Ingen guide', group: 'Norway - Nyheter', url: 'http://127.0.0.1:1/b' },
+    ]);
+    const status = (page) => page.$eval('#guide-status', (el) => (el.hidden ? '' : el.textContent));
+    const nowShowing = (page) => page.$$eval('.channel-now', (xs) => xs.map((x) => x.textContent).join());
+
+    guideDown = true;
+    check('guide down, no copy: 502', (await raw(false)).status === 502);
+    const page = await openApp(url, 'live', epgUrl);
+    check('guide down: sidebar says unavailable, with Retry', await waitFor(page, () => /Guide unavailable · Retry/.test(document.getElementById('guide-status').textContent), 10000), await status(page));
+
+    guideDown = false;
+    await page.click('#guide-status .guide-retry');
+    check('Retry loads the guide: status gone', await waitFor(page, () => document.getElementById('guide-status').hidden, 10000), await status(page));
+    check('Retry loads the guide: programme shown', (await nowShowing(page)) === 'Nyhetene', await nowShowing(page));
+
+    guideDown = true;
+    const stale = await raw(true);
+    check('refresh failed: older copy sent with the reason', stale.status === 200 && /503/.test(decodeURIComponent(stale.headers.get('x-guide-error') ?? '')),
+      `${stale.status} ${stale.headers.get('x-guide-error')}`);
+    // Saving the settings reloads the guide, past the server's copy: the provider is still down.
+    await page.click('#settings-btn');
+    await page.click('#settings-dialog button[value="save"]');
+    check('refresh failed: sidebar says so, with Retry', await waitFor(page, () => /Guide from .* · refresh failed · Retry/.test(document.getElementById('guide-status').textContent), 15000), await status(page));
+    check('refresh failed: programmes still shown', (await nowShowing(page)) === 'Nyhetene', await nowShowing(page));
+    await page.click('.channel:nth-child(2)');
+    check('channel without programmes says so', await waitFor(page, () => document.querySelector('.np-guide-note')?.textContent === 'No guide info for this channel', 5000),
+      await page.$eval('#np-epg', (el) => el.textContent));
+    guideDown = false;
+    check('no page errors', !page.errors.length, page.errors.join('; '));
+    await page.close();
   },
 
   async ui(check) {
@@ -772,6 +815,18 @@ const scenarios = {
       return { dupes, total: seen.size };
     });
     check('replayed within hours: each subtitle once, not twice', duplicates.total > 0 && duplicates.dupes === 0, JSON.stringify(duplicates));
+    await page.close();
+  },
+
+  async mp2Movie(check) {
+    // MP2 audio (broadcast recordings): Chrome plays such an MKV without sound, and says nothing.
+    const url = playlist('mp2', [{ name: 'Fight Night (2021)', group: 'UFC - WWE - Boxing', file: media.movieMp2(), path: '/movie/u/p/5.mkv' }]);
+    const page = await openApp(url, 'movie');
+    const requests = [];
+    page.on('request', (r) => { const u = new URL(r.url()); if (!(u.searchParams.get('url') ?? '').includes('player_api')) requests.push(u.pathname); });
+    await playMovie(page);
+    check('MP2 audio: converted by ffmpeg, plays with sound', await waitFor(page, () => document.getElementById('video').webkitAudioDecodedByteCount > 0, 60000) && requests.includes('/transcode'),
+      [...new Set(requests)].join(' → '));
     await page.close();
   },
 

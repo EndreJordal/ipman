@@ -209,6 +209,31 @@ dialog input[type='url']:focus {
   color: var(--danger);
 }
 
+/* The TV guide's status: only shown while it's loading or after a failed load. */
+.guide-status {
+  padding: 0 14px 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.guide-status[data-state='failed'],
+.np-guide-note:has(.guide-retry) {
+  color: var(--danger);
+}
+
+.guide-retry {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+}
+
+.guide-retry:hover {
+  text-decoration: underline;
+}
+
 .channel-list {
   flex: 1;
   min-height: 0;
@@ -702,6 +727,11 @@ video::cue {
   font-size: 12px;
 }
 
+.np-guide-note {
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .np-status {
   color: var(--muted);
   font-size: 12px;
@@ -1052,7 +1082,7 @@ fieldset.xtream p {
   display: flex;
 }
 
-.app:is([data-section='movie'], [data-section='series']) :is(.filter-row, .channel-list) {
+.app:is([data-section='movie'], [data-section='series']) :is(.filter-row, .channel-list, .guide-status) {
   display: none;
 }
 

@@ -35,16 +35,20 @@ function unsupportedAudio(codec: string | undefined): boolean {
  * Matroska audio codecs Chrome can't decode, with the codec string to double-check (Edge or
  * Safari may support some). For MKV files Chrome gives no error: it plays the video silently.
  */
-const MKV_UNSUPPORTED_AUDIO: [prefix: string, codec: string][] = [
+const MKV_UNSUPPORTED_AUDIO: [prefix: string, codec: string | null][] = [
   ['A_EAC3', 'ec-3'],
   ['A_AC3', 'ac-3'],
   ['A_DTS', 'dtsc'],
   ['A_TRUEHD', 'mlpa'],
+  // MPEG-1 Layer I/II (MP2, common in broadcast recordings). No codec string tells it apart
+  // from MP3, which browsers do play, so it's always converted.
+  ['A_MPEG/L2', null],
+  ['A_MPEG/L1', null],
 ];
 
 function mkvAudioPlayable(codec: string | null): boolean {
   const known = codec ? MKV_UNSUPPORTED_AUDIO.find(([prefix]) => codec.startsWith(prefix)) : undefined;
-  return !known || MediaSource.isTypeSupported(`audio/mp4; codecs="${known[1]}"`);
+  return !known || (!!known[1] && MediaSource.isTypeSupported(`audio/mp4; codecs="${known[1]}"`));
 }
 
 /** mpegts.js runs in a worker, so its URLs must be absolute. */

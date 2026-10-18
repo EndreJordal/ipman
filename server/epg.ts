@@ -4,7 +4,8 @@
  * GET /epg?url=<encoded XMLTV URL>[&force=1] downloads the XMLTV file (often 50–300 MB,
  * sometimes gzipped), keeps only programmes near the current time, and returns a compact
  * JSON Guide. Results are cached in memory and on disk, because Xtream servers can take
- * tens of seconds to generate xmltv.php.
+ * tens of seconds to generate xmltv.php. When a download fails but an older copy exists, that
+ * copy is sent with the reason in the X-Guide-Error header, so the page can say so.
  */
 import { createHash } from 'node:crypto';
 import { mkdir, readdir, readFile, stat, unlink, writeFile } from 'node:fs/promises';
@@ -14,7 +15,7 @@ import { pipeline, Readable } from 'node:stream';
 import type { ReadableStream as NodeReadableStream } from 'node:stream/web';
 import { createGunzip } from 'node:zlib';
 import { Parser } from 'htmlparser2';
-import { EPG_PATH, normalizeName, type Guide, type Programme } from '../src/lib/epg.ts';
+import { EPG_PATH, GUIDE_ERROR_HEADER, normalizeName, type Guide, type Programme } from '../src/lib/epg.ts';
 import { pathOf, sendError, targetFromQuery } from './http.ts';
 import { DATA_DIR } from './paths.ts';
 
@@ -29,7 +30,8 @@ const MEMORY_ENTRIES = 2;
 const DISK_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 /** Programme window kept relative to download time. Must outlast CACHE_TTL + the client refresh interval. */
 const KEEP_PAST_MS = 60 * 60 * 1000;
-const KEEP_AHEAD_MS = 16 * 60 * 60 * 1000;
+// Two days ahead, so a provider outage overnight doesn't leave the guide empty.
+const KEEP_AHEAD_MS = 48 * 60 * 60 * 1000;
 const MAX_DESC_LENGTH = 300;
 /** Stop time assumed for a channel's last programme when the guide omits it. */
 const DEFAULT_DURATION_MS = 60 * 60 * 1000;
@@ -37,6 +39,12 @@ const DEFAULT_DURATION_MS = 60 * 60 * 1000;
 interface CacheEntry {
   fetchedAt: number;
   json: string;
+}
+
+/** What the guide service sends: the guide, and why it's an older copy if the download failed. */
+interface GuideResult {
+  entry: CacheEntry;
+  error?: string;
 }
 
 const memoryCache = new Map<string, CacheEntry>();
@@ -205,9 +213,9 @@ async function pruneDiskCache(): Promise<void> {
   }
 }
 
-async function getGuide(url: string, force: boolean): Promise<CacheEntry> {
+async function getGuide(url: string, force: boolean): Promise<GuideResult> {
   const cached = await readCache(url);
-  if (cached && !force && Date.now() - cached.fetchedAt < CACHE_TTL_MS) return cached;
+  if (cached && !force && Date.now() - cached.fetchedAt < CACHE_TTL_MS) return { entry: cached };
 
   let pending = inflight.get(url);
   if (!pending) {
@@ -224,11 +232,12 @@ async function getGuide(url: string, force: boolean): Promise<CacheEntry> {
   }
 
   try {
-    return await pending;
+    return { entry: await pending };
   } catch (err) {
     if (cached) {
-      console.warn(`[epg] refresh failed, serving cached guide: ${(err as Error).message}`);
-      return cached;
+      const error = (err as Error).message;
+      console.warn(`[epg] refresh failed, serving cached guide: ${error}`);
+      return { entry: cached, error };
     }
     throw err;
   }
@@ -239,8 +248,10 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   const target = targetFromQuery(req);
   if (!target) return sendError(res, 400, 'Missing or invalid ?url= parameter');
 
-  const entry = await getGuide(target.href, params.has('force'));
+  const { entry, error } = await getGuide(target.href, params.has('force'));
   res.setHeader('content-type', 'application/json');
+  // Header values must be plain ASCII.
+  if (error) res.setHeader(GUIDE_ERROR_HEADER, encodeURIComponent(error));
   res.setHeader('cache-control', 'no-store');
   res.end(entry.json);
 }

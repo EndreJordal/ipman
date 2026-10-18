@@ -1,6 +1,7 @@
 import './style.css';
 import {
   epgServiceUrl,
+  GUIDE_ERROR_HEADER,
   guessEpgUrl,
   nowAndNext,
   programmesFor,
@@ -31,8 +32,12 @@ const FAVORITES = '__favorites__';
 const REFRESH_AFTER_MS = 24 * 60 * 60 * 1000;
 /** Delay before tuning while zapping, so holding ↓ doesn't open a connection per channel. */
 const ZAP_DELAY_MS = 300;
-/** Re-download the guide after this long. The server keeps 16 h of programmes per download. */
+/** Re-download the guide after this long. The server keeps 48 h of programmes per download. */
 const GUIDE_REFRESH_MS = 3 * 60 * 60 * 1000;
+/** Shortest gap between guide loads, while the server keeps sending the copy it has. */
+const GUIDE_MIN_GAP_MS = 15 * 60 * 1000;
+/** Delays before retrying a failed guide download: 1, 5 and 15 minutes, then every hour. */
+const GUIDE_RETRY_MS = [1, 5, 15, 60].map((minutes) => minutes * 60 * 1000);
 /** How often now/next info and progress bars update. */
 const GUIDE_TICK_MS = 60 * 1000;
 /** How often the position of a movie or episode is saved while it plays. */
@@ -57,6 +62,7 @@ const els = {
   npName: byId<HTMLDivElement>('np-name'),
   npGroup: byId<HTMLDivElement>('np-group'),
   npEpg: byId<HTMLDivElement>('np-epg'),
+  guideStatus: byId<HTMLDivElement>('guide-status'),
   npStatus: byId<HTMLSpanElement>('np-status'),
   npResolution: byId<HTMLSpanElement>('np-resolution'),
   npFav: byId<HTMLButtonElement>('np-fav'),
@@ -85,7 +91,16 @@ let guide: Guide | null = null;
 let guideUrl = '';
 /** Each channel's programmes, resolved once per guide/playlist pair. */
 let guideIndex = new Map<Channel, Programme[]>();
-let guideStatus = '';
+/** "Guide: … of … TV channels matched · fetched …", for the settings dialog. */
+let guideSummary = '';
+/** none: no guide URL for this playlist. failed: the last load failed (`guide` may be an older copy). */
+type GuideState = 'idle' | 'none' | 'loading' | 'ok' | 'failed';
+let guideState: GuideState = 'idle';
+let guideError = '';
+/** Failed loads in a row, for the retry delay. */
+let guideFailures = 0;
+/** When the minute tick loads the guide again. */
+let nextGuideLoad = Infinity;
 let groupParts = new Map<string, { country: string; category: string }>();
 let categoriesByCountry = new Map<string, Set<string>>();
 /** TV, MOVIES or SERIES. Each section plays (and remembers) its own kind of stream. */
@@ -215,10 +230,10 @@ function rebuildGuideIndex(): void {
     const programmes = programmesFor(guide, channel);
     if (programmes) guideIndex.set(channel, programmes);
   }
-  guideStatus =
+  guideSummary =
     `Guide: ${guideIndex.size.toLocaleString()} of ${liveChannels.length.toLocaleString()} TV channels matched` +
     ` · fetched ${new Date(guide.fetchedAt).toLocaleString()}`;
-  console.info(`[ipman] ${guideStatus}`);
+  console.info(`[ipman] ${guideSummary}`);
 }
 
 function setGuide(next: Guide | null, url: string): void {
@@ -229,50 +244,124 @@ function setGuide(next: Guide | null, url: string): void {
   updateNowPlaying();
 }
 
+/** The guide line in the settings dialog. */
+function guideStatusLine(): string {
+  if (guideState === 'none') return 'Guide: none found for this playlist. Set a guide URL above.';
+  if (guide) return guideState === 'failed' ? `${guideSummary} (refresh failed: ${guideError})` : guideSummary;
+  if (guideState === 'loading') return 'Guide: loading… (the first download can take a minute)';
+  return guideState === 'failed' ? `Guide: ${guideError}` : '';
+}
+
+/** "14:05" today, "10 Oct 19:59" on other days. */
+function formatWhen(ms: number): string {
+  const date = new Date(ms);
+  if (date.toDateString() === new Date().toDateString()) return formatTime(ms);
+  return `${date.toLocaleDateString([], { day: 'numeric', month: 'short' })} ${formatTime(ms)}`;
+}
+
+/** The guide's status for the sidebar and the now-playing area, or nothing while all is well. */
+function renderGuideNotice(): Node[] {
+  let text = '';
+  if (guideState === 'loading') text = guide ? 'Guide: retrying…' : 'Guide loading…';
+  else if (guideState === 'failed') text = guide ? `Guide from ${formatWhen(guide.fetchedAt)} · refresh failed` : 'Guide unavailable';
+  if (!text) return [];
+
+  const label = document.createElement('span');
+  label.textContent = text;
+  if (guideState === 'failed') label.title = guideError;
+  if (guideState !== 'failed') return [label];
+  const retry = document.createElement('button');
+  retry.type = 'button';
+  retry.className = 'guide-retry';
+  retry.textContent = 'Retry';
+  retry.addEventListener('click', () => void loadGuide(true));
+  return [label, document.createTextNode(' · '), retry];
+}
+
+function setGuideState(state: GuideState, error = ''): void {
+  guideState = state;
+  guideError = error;
+  const notice = renderGuideNotice();
+  els.guideStatus.hidden = !notice.length;
+  els.guideStatus.dataset.state = state;
+  els.guideStatus.replaceChildren(...notice);
+  renderNowPlayingGuide();
+}
+
+/** When the minute tick should load the guide next. */
+function scheduleGuide(at: number): void {
+  nextGuideLoad = at;
+}
+
 /** Incremented per load, so an older download can't replace a newer guide. */
 let guideRun = 0;
 /** The guide URL being downloaded, so the minute tick doesn't start it again. */
 let guideLoadingUrl = '';
 
+/** `force` (a Retry, or saved settings) skips the caches and starts the retry delays over. */
 async function loadGuide(force = false): Promise<void> {
   const epgUrl = settings.epgUrl || guessEpgUrl(settings.playlistUrl, playlist.epgUrl);
   // Another provider's guide doesn't fit this playlist's channels.
   if (guide && guideUrl !== epgUrl) setGuide(null, '');
   if (!epgUrl) {
-    guideStatus = 'Guide: none found for this playlist. Set a guide URL above.';
+    scheduleGuide(Infinity);
+    setGuideState('none');
     return;
   }
   if (!force && guideLoadingUrl === epgUrl) return;
+  if (force) guideFailures = 0;
   const run = ++guideRun;
   guideLoadingUrl = epgUrl;
   try {
     const cached = await store.getCachedGuide().catch(() => undefined);
     if (run !== guideRun) return;
     if (cached?.url === epgUrl && !guide) setGuide(cached.guide, epgUrl);
-    if (!force && cached?.url === epgUrl && Date.now() - cached.guide.fetchedAt < GUIDE_REFRESH_MS) return;
+    if (!force && cached?.url === epgUrl && Date.now() - cached.guide.fetchedAt < GUIDE_REFRESH_MS) {
+      scheduleGuide(cached.guide.fetchedAt + GUIDE_REFRESH_MS);
+      if (guideState !== 'failed') setGuideState('ok');
+      return;
+    }
 
-    if (!guide) guideStatus = 'Guide: loading… (the first download can take a minute)';
+    // A background refresh keeps quiet; a first download or a Retry says what it's doing.
+    if (!guide || force) setGuideState('loading');
     const res = await fetch(epgServiceUrl(epgUrl, force));
     if (!res.ok) throw new Error((await res.text()) || `HTTP ${res.status}`);
     const fresh = (await res.json()) as Guide;
     if (run !== guideRun) return;
-    setGuide(fresh, epgUrl);
-    store.cacheGuide({ url: epgUrl, guide: fresh }).catch((err: Error) => console.warn(`[ipman] Could not cache the guide: ${err.message}`));
+    // The server sends its own copy until that is due for a refresh: nothing new to show then.
+    if (!guide || guideUrl !== epgUrl || fresh.fetchedAt !== guide.fetchedAt) {
+      setGuide(fresh, epgUrl);
+      store.cacheGuide({ url: epgUrl, guide: fresh }).catch((err: Error) => console.warn(`[ipman] Could not cache the guide: ${err.message}`));
+    }
+    // The download failed and the server sent the copy it had.
+    const refreshError = res.headers.get(GUIDE_ERROR_HEADER);
+    if (refreshError) throw new Error(decodeHeader(refreshError));
+    guideFailures = 0;
+    scheduleGuide(Math.max(fresh.fetchedAt + GUIDE_REFRESH_MS, Date.now() + GUIDE_MIN_GAP_MS));
+    setGuideState('ok');
   } catch (err) {
     if (run !== guideRun) return;
     const message = (err as Error).message;
     console.warn(`[ipman] Could not load guide: ${message}`);
-    guideStatus = guide ? `${guideStatus} (refresh failed: ${message})` : `Guide: ${message}`;
+    scheduleGuide(Date.now() + GUIDE_RETRY_MS[Math.min(guideFailures++, GUIDE_RETRY_MS.length - 1)]);
+    setGuideState('failed', message);
   } finally {
     if (run === guideRun) guideLoadingUrl = '';
   }
 }
 
+function decodeHeader(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
 function renderNowPlayingGuide(): void {
-  const { now, next } = current ? nowAndNext(guideIndex.get(current)) : {};
-  els.npEpg.hidden = !now && !next;
-  els.npGroup.hidden = !els.npEpg.hidden;
-  if (els.npEpg.hidden) return;
+  const live = current?.kind === 'live';
+  const { now, next } = live ? nowAndNext(guideIndex.get(current!)) : {};
+  els.npGroup.hidden = !!(now || next);
 
   const lines: HTMLElement[] = [];
   if (now) {
@@ -289,6 +378,19 @@ function renderNowPlayingGuide(): void {
     line.title = describeProgramme(next);
     lines.push(line);
   }
+  if (live && !now && !next) {
+    // Say why there's nothing: the guide is missing or out of date (a refresh would help), or it
+    // doesn't know this channel at all (a refresh wouldn't).
+    const notice = !guide || guideIndex.has(current!) ? renderGuideNotice() : [];
+    if (notice.length || guide) {
+      const line = document.createElement('div');
+      line.className = 'np-guide-note';
+      if (notice.length) line.append(...notice);
+      else line.textContent = 'No guide info for this channel';
+      lines.push(line);
+    }
+  }
+  els.npEpg.hidden = !lines.length;
   els.npEpg.replaceChildren(...lines);
 }
 
@@ -609,7 +711,7 @@ function openSettings(): void {
       (lastFetchedAt ? ` · fetched ${new Date(lastFetchedAt).toLocaleString()}` : '')
     : '';
   els.settingsInfo.replaceChildren(
-    ...[playlistInfo, guideStatus].filter(Boolean).flatMap((line, i) => (i ? [document.createElement('br'), line] : [line])),
+    ...[playlistInfo, guideStatusLine()].filter(Boolean).flatMap((line, i) => (i ? [document.createElement('br'), line] : [line])),
   );
   els.dialog.returnValue = '';
   els.dialog.showModal();
@@ -816,12 +918,13 @@ document.addEventListener('keydown', (event) => {
   event.preventDefault();
 });
 
-// Roll shows over and keep progress bars moving; also picks up a stale guide after sleep.
+// Roll shows over and keep progress bars moving; also refreshes or retries the guide when due
+// (after sleep too).
 setInterval(() => {
+  if (Date.now() >= nextGuideLoad) void loadGuide();
   if (!guide) return;
   list.refresh();
   renderNowPlayingGuide();
-  if (Date.now() - guide.fetchedAt > GUIDE_REFRESH_MS) void loadGuide();
 }, GUIDE_TICK_MS);
 
 void loadPlaylist().then(() => loadGuide());

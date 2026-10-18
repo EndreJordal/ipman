@@ -162,9 +162,12 @@ The app shows the current programme under each channel name, and the current and
 3. For Xtream-style playlists (`get.php?username=…&password=…`), the provider's `xmltv.php`.
 
 **How it's processed.** [server/epg.ts](server/epg.ts) serves `/epg?url=…`:
-- It downloads the XMLTV file (gzipped files are handled) and keeps programmes from 1 hour ago to 16 hours ahead.
+- It downloads the XMLTV file (gzipped files are handled) and keeps programmes from 1 hour ago to 48 hours ahead, so a provider outage overnight doesn't empty the guide.
 - It returns them as compact JSON, cached on disk in `.cache/epg/` for 6 hours.
+- If a download fails, it sends the copy it already has, with the reason in an `X-Guide-Error` header.
 - The browser caches the result in IndexedDB and downloads it again every 3 hours.
+
+**When the guide fails.** The TV sidebar and the now-playing bar say so: "Guide unavailable" when there's no guide, or "Guide from 14:05 · refresh failed" when an older copy is shown. Hover for the error, or press **Retry** to download it again straight from the provider. Failed downloads are also retried by themselves after 1, 5 and 15 minutes, then every hour. A channel the guide doesn't know shows "No guide info for this channel".
 
 **Matching.** Channels are matched to the guide by `tvg-id`, falling back to a normalized channel name. The settings dialog shows how many channels matched.
 
