@@ -1,4 +1,4 @@
-import { get, set } from 'idb-keyval';
+import { del, get, set } from 'idb-keyval';
 import type { Guide } from './lib/epg';
 import type { ChannelKind } from './lib/m3u';
 import type { SeriesSummary, VodSummary, XtreamAccount } from './lib/xtream';
@@ -115,9 +115,13 @@ export const store = {
   cacheGuide: (guide: CachedGuide) => set('guide', guide),
 
   // "movieSummaries", not the older "vodSummaries" (a different format).
-  getCachedMovieSummaries: () => get<CachedSummaries<VodSummary>>('movieSummaries'),
-  cacheMovieSummaries: (summaries: CachedSummaries<VodSummary>) => set('movieSummaries', summaries),
+  // "movieSummaries2" and "seriesSummaries2": the lists before 0.3.4 had no dates.
+  getCachedMovieSummaries: () => get<CachedSummaries<VodSummary>>('movieSummaries2'),
+  cacheMovieSummaries: (summaries: CachedSummaries<VodSummary>) => set('movieSummaries2', summaries),
 
-  getCachedSeriesSummaries: () => get<CachedSummaries<SeriesSummary>>('seriesSummaries'),
-  cacheSeriesSummaries: (summaries: CachedSummaries<SeriesSummary>) => set('seriesSummaries', summaries),
+  getCachedSeriesSummaries: () => get<CachedSummaries<SeriesSummary>>('seriesSummaries2'),
+  cacheSeriesSummaries: (summaries: CachedSummaries<SeriesSummary>) => set('seriesSummaries2', summaries),
 };
+
+// The lists in their old format, a few MB each.
+for (const key of ['movieSummaries', 'seriesSummaries']) del(key).catch(() => {});

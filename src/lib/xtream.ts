@@ -129,6 +129,16 @@ export function movieId(streamUrl: string): string | null {
 export interface VodSummary {
   /** 0–10, or null when the provider has none. */
   rating: number | null;
+  /** When the provider added it (ms), or null. */
+  added: number | null;
+}
+
+/** A Unix time in seconds as ms; null when missing, or in the future (some panels put 2038 there). */
+function unixTime(value: unknown): number | null {
+  const seconds = Number(value);
+  if (!Number.isFinite(seconds) || seconds <= 0) return null;
+  const ms = seconds * 1000;
+  return ms > Date.now() + 24 * 60 * 60 * 1000 ? null : ms;
 }
 
 async function getJson<T>(url: string): Promise<T> {
@@ -148,12 +158,12 @@ async function getJson<T>(url: string): Promise<T> {
 
 /** Ratings and dates for every movie, keyed by movie ID. One request for the whole catalogue. */
 export async function fetchVodSummaries(account: XtreamAccount, fetchUrl: (url: string) => string): Promise<Map<string, VodSummary>> {
-  const list = await getJson<Array<{ stream_id: number | string; rating?: string | number }>>(
+  const list = await getJson<Array<{ stream_id: number | string; rating?: string | number; added?: string | number }>>(
     fetchUrl(apiUrl(account, { action: 'get_vod_streams' })),
   );
   const summaries = new Map<string, VodSummary>();
   for (const item of Array.isArray(list) ? list : []) {
-    summaries.set(String(item.stream_id), { rating: roundRating(item.rating) });
+    summaries.set(String(item.stream_id), { rating: roundRating(item.rating), added: unixTime(item.added) });
   }
   return summaries;
 }
@@ -235,6 +245,8 @@ export interface SeriesSummary {
   rating: number | null;
   cover: string;
   year: number | null;
+  /** When the provider last changed it, usually a new episode (ms), or null. */
+  updated: number | null;
 }
 
 /**
@@ -261,6 +273,7 @@ export async function fetchSeriesSummaries(
       rating: roundRating(item.rating),
       cover: text(item.cover),
       year: year || null,
+      updated: unixTime(item.last_modified),
     });
   }
   return summaries;

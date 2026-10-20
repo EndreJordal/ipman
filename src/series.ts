@@ -11,6 +11,7 @@ import {
   CatalogView,
   categoryLabel,
   cssUrl,
+  formatDate,
   formatDuration,
   plural,
   renderMeta,
@@ -67,6 +68,7 @@ export class SeriesView extends CatalogView<Series> {
   private panelSeason = 1;
   /** The season shown in the details dialog. */
   private dialogSeason = 1;
+  private idOrders = new WeakMap<Series, number>();
 
   private els = {
     backdrop: byId('sd-backdrop'),
@@ -95,6 +97,8 @@ export class SeriesView extends CatalogView<Series> {
         noContinue: 'Nothing started yet. Series you watch show up here.',
         none: 'This playlist has no series.',
         search: 'Search series',
+        newCategory: '✦ Updated this week',
+        noNew: 'No series added or updated in the last week.',
       },
       cardExtraHeight: 80,
     });
@@ -186,6 +190,25 @@ export class SeriesView extends CatalogView<Series> {
 
   protected yearOf(series: Series): number | undefined {
     return this.title(series).year ?? this.summaries.get(series.key)?.year ?? undefined;
+  }
+
+  protected providerDateOf(series: Series): number | null | undefined {
+    return this.summaries.get(series.key)?.updated;
+  }
+
+  /** The highest episode ID: when the newest episode was added, on most servers. */
+  protected idOrderOf(series: Series): number {
+    let max = this.idOrders.get(series);
+    if (max === undefined) {
+      max = allEpisodes(series).reduce((m, ep) => Math.max(m, Number(episodeId(ep.channel.url)) || 0), 0);
+      this.idOrders.set(series, max);
+    }
+    return max;
+  }
+
+  /** A series counts as updated when it has more episodes than before. */
+  protected seenEntry(series: Series): [string, number] {
+    return [series.key, series.episodeCount];
   }
 
   /** Series with an episode in progress, or a next one to watch, most recently watched first. */
@@ -321,6 +344,8 @@ export class SeriesView extends CatalogView<Series> {
     if (details?.director) meta.push(['Created by', details.director]);
     if (details?.cast) meta.push(['Cast', details.cast]);
     meta.push(['Category', categoryLabel(series.group)]);
+    const updated = this.providerDateOf(series);
+    if (updated) meta.push(['Updated', formatDate(updated)]);
     renderMeta(els.meta, meta);
 
     this.renderLinks(details?.trailer, details?.tmdbId, 'tv');

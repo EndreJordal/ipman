@@ -5,6 +5,7 @@
 import type { Channel } from './lib/m3u';
 import { parseMovieTitle, type MovieTitle } from './lib/movie-title';
 import { XtreamError, type XtreamAccount } from './lib/xtream';
+import { trackFirstSeen } from './first-seen';
 import { store, type CachedSummaries } from './store';
 import { VirtualGrid } from './virtual-grid';
 
@@ -211,9 +212,15 @@ export class SummaryCache<V> {
 export const ALL = '__all__';
 export const CONTINUE = '__continue__';
 export const FAVORITES = '__favorites__';
+/** Added (movies) or updated (series) in the last week. */
+export const NEW = '__new__';
+const NEW_DAYS = 7;
 
-type CatalogSort = 'title' | 'year' | 'rating';
-const SORTS: CatalogSort[] = ['title', 'year', 'rating'];
+type CatalogSort = 'title' | 'year' | 'rating' | 'added';
+const SORTS: CatalogSort[] = ['title', 'year', 'rating', 'added'];
+
+/** "18 Oct 2026". */
+export const formatDate = (ms: number) => new Date(ms).toLocaleDateString([], { day: 'numeric', month: 'short', year: 'numeric' });
 
 export interface CatalogDeps {
   /** Favorites are shared with TV: movies use their stream key, series "series:<key>". */
@@ -241,6 +248,9 @@ export interface CatalogConfig {
     noContinue: string;
     none: string;
     search: string;
+    /** "✦ New this week" (movies) or "✦ Updated this week" (series). */
+    newCategory: string;
+    noNew: string;
   };
   /** Room under the poster for the text lines. */
   cardExtraHeight: number;
@@ -271,7 +281,14 @@ export abstract class CatalogView<T extends object> {
    * filtering and searching just walk it instead of sorting 56,000 titles on every keystroke.
    */
   private sorted: T[] | null = null;
+  /** Other orders needed besides the chosen one ("New this week" is newest first). */
+  private sortedBy = new Map<CatalogSort, T[]>();
   private titles = new WeakMap<T, MovieTitle>();
+  /** When ipman first saw each item (or a series grew), by seenEntry key; 0 = there from the start. */
+  private seen = new Map<string, number>();
+  private seenRun = 0;
+  /** The "New this week" count the sidebar shows. */
+  private shownNewCount = 0;
   private searchNames = new WeakMap<T, string>();
   private base: {
     categories: HTMLElement;
@@ -331,6 +348,7 @@ export abstract class CatalogView<T extends object> {
       this.sort = this.base.sort.value as CatalogSort;
       store.setSort(section, this.sort);
       this.sorted = null;
+      this.sortedBy.clear();
       this.grid.scrollToTop();
       this.applyFilter();
     });
@@ -361,6 +379,22 @@ export abstract class CatalogView<T extends object> {
   protected abstract openDetails(item: T): void;
   /** Starts loading the Xtream list, if there's an account. */
   protected abstract loadSummaries(): void;
+  /** The provider's date (Xtream): when a movie was added, or a series last updated. */
+  protected abstract providerDateOf(item: T): number | null | undefined;
+  /** The provider's ID from the URLs (higher = added later on most servers), for ties. 0 if none. */
+  protected abstract idOrderOf(item: T): number;
+  /** The item's key for first-seen dates, and what makes it count as updated (a series' episodes). */
+  protected abstract seenEntry(item: T): [key: string, marker: number];
+
+  /**
+   * When the item was added or updated: the provider's date, or else when ipman first saw it.
+   * Undefined when unknown (no account, and it was there when ipman first looked).
+   */
+  protected addedOf(item: T): number | undefined {
+    const provider = this.providerDateOf(item);
+    if (provider) return provider;
+    return this.seen.get(this.seenEntry(item)[0]) || undefined;
+  }
 
   protected yearOf(item: T): number | undefined {
     return this.title(item).year;
@@ -392,10 +426,26 @@ export abstract class CatalogView<T extends object> {
   /** A new playlist arrived. */
   playlistChanged(): void {
     this.sorted = null;
+    this.sortedBy.clear();
     this.counts = new Map();
     for (const item of this.items()) this.counts.set(this.groupOf(item), (this.counts.get(this.groupOf(item)) ?? 0) + 1);
-    if (![ALL, CONTINUE, FAVORITES].includes(this.category) && !this.counts.has(this.category)) this.category = ALL;
+    if (![ALL, CONTINUE, FAVORITES, NEW].includes(this.category) && !this.counts.has(this.category)) this.category = ALL;
     if (this.active) this.show();
+    void this.trackSeen();
+  }
+
+  /** Records what's new in this playlist, then re-sorts if the new dates matter. */
+  private async trackSeen(): Promise<void> {
+    const items = this.items();
+    if (!items.length) return;
+    const run = ++this.seenRun;
+    const seen = await trackFirstSeen(this.config.section, items.map((item) => this.seenEntry(item))).catch(() => null);
+    if (!seen || run !== this.seenRun) return;
+    // Nothing seen for the first time, now or before (as on the first run): nothing to redraw.
+    const news = (map: Map<string, number>) => [...map.values()].some((at) => at > 0);
+    const redraw = news(seen) || news(this.seen);
+    this.seen = seen;
+    if (redraw) this.datesChanged();
   }
 
   /** Favorites changed, here or elsewhere (e.g. the ★ in the now-playing bar). */
@@ -411,23 +461,33 @@ export abstract class CatalogView<T extends object> {
     const query = this.deps.search.value.trim().toLowerCase();
     const { category } = this;
     const continuing = category === CONTINUE ? this.continueWatching() : null;
-    // "Continue watching" keeps its own order: the most recently watched first.
-    const source = continuing ?? this.sortedItems();
+    // "Continue watching" keeps its own order: the most recently watched first. "New this week":
+    // the newest first.
+    const fixedOrder = continuing ? 'Sorted by when you last watched' : category === NEW ? 'Sorted by newest first' : '';
+    const source = continuing ?? (category === NEW ? this.sortedItems('added') : this.sortedItems());
+    const weekAgo = Date.now() - NEW_DAYS * 24 * 60 * 60 * 1000;
     this.visible = source.filter((item) => {
-      if (category === FAVORITES) {
+      if (category === NEW) {
+        if (!((this.addedOf(item) ?? 0) > weekAgo)) return false;
+      } else if (category === FAVORITES) {
         if (!this.deps.isFavorite(this.favoriteKey(item))) return false;
       } else if (!continuing && category !== ALL && this.groupOf(item) !== category) {
         return false;
       }
       return !query || this.searchName(item).includes(query);
     });
-    this.base.sort.disabled = !!continuing;
-    this.base.sort.title = continuing ? 'Sorted by when you last watched' : '';
+    this.base.sort.disabled = !!fixedOrder;
+    this.base.sort.title = fixedOrder;
     this.grid.setItems(this.visible);
 
     const { text } = this.config;
     const n = this.visible.length;
-    const headings: Record<string, string> = { [ALL]: text.all, [CONTINUE]: 'Continue watching', [FAVORITES]: text.favorites };
+    const headings: Record<string, string> = {
+      [ALL]: text.all,
+      [CONTINUE]: 'Continue watching',
+      [FAVORITES]: text.favorites,
+      [NEW]: text.newCategory.replace(/^\W+/, ''),
+    };
     this.base.heading.textContent = headings[category] ?? categoryLabel(category);
     const count = plural(n, text.one, text.many);
     this.base.headingCount.textContent = n ? count : '';
@@ -437,7 +497,9 @@ export abstract class CatalogView<T extends object> {
         ? text.noFavorites
         : category === CONTINUE && !query
           ? text.noContinue
-          : this.items().length
+          : category === NEW && !query
+            ? text.noNew
+            : this.items().length
             ? `No matching ${text.many}`
             : text.none;
     this.deps.count.classList.remove('error');
@@ -445,14 +507,27 @@ export abstract class CatalogView<T extends object> {
 
   // ---------- For subclasses ----------
 
-  /** The Xtream list changed: ratings (and years) can change the order, not only the cards. */
+  /** The Xtream list changed: ratings, years and dates can change the order, not only the cards. */
   protected summariesChanged(): void {
-    if (this.sort !== 'title') {
-      this.sorted = null;
-      if (this.active) this.applyFilter();
-    } else {
-      this.grid.refresh();
-    }
+    if (this.sort !== 'title') this.sorted = null;
+    this.datesChanged();
+  }
+
+  /** Dates arrived (Xtream list or first-seen): "New this week" and the newest-first order follow. */
+  private datesChanged(): void {
+    this.sortedBy.delete('added');
+    if (this.sort === 'added') this.sorted = null;
+    if (!this.active) return;
+    // Redrawing the sidebar only when its "new" count changed keeps clicks there from missing.
+    if (this.newCount() !== this.shownNewCount) this.renderCategories();
+    if (this.sort === 'added' || this.category === NEW || this.sorted === null) this.applyFilter();
+    else this.grid.refresh();
+  }
+
+  /** Items added (or updated) in the last week. */
+  private newCount(): number {
+    const weekAgo = Date.now() - NEW_DAYS * 24 * 60 * 60 * 1000;
+    return this.items().reduce((n, item) => n + ((this.addedOf(item) ?? 0) > weekAgo ? 1 : 0), 0);
   }
 
   protected title(item: T): MovieTitle {
@@ -515,7 +590,7 @@ export abstract class CatalogView<T extends object> {
     if (year) meta.append(Object.assign(document.createElement('span'), { textContent: String(year) }));
     // Across categories the same title often appears several times (language versions): the
     // category tells them apart. Inside one category it would only repeat the heading.
-    if (this.category === ALL || this.category === FAVORITES || this.category === CONTINUE) {
+    if (this.category === ALL || this.category === FAVORITES || this.category === CONTINUE || this.category === NEW) {
       meta.append(Object.assign(document.createElement('span'), { className: 'movie-category', textContent: categoryLabel(this.groupOf(item)) }));
     }
 
@@ -534,30 +609,43 @@ export abstract class CatalogView<T extends object> {
     return name;
   }
 
-  /** Title: A–Z. Year: newest first. Rating: highest first. Ties, and missing years or ratings, by title. */
-  private sortedItems(): T[] {
-    if (this.sorted) return this.sorted;
+  /**
+   * Title: A–Z. Year: newest first. Rating: highest first. Added: newest first, then by ID
+   * (higher = later on most servers). Ties, and missing values, by title.
+   */
+  private sortedItems(sort = this.sort): T[] {
+    if (sort === this.sort && this.sorted) return this.sorted;
+    const cached = this.sortedBy.get(sort);
+    if (cached) return cached;
     const byTitle = (a: T, b: T) => collator.compare(this.title(a).title, this.title(b).title);
     const year = (item: T) => this.yearOf(item) ?? -1;
     const rating = (item: T) => this.ratingOf(item) ?? -1;
+    const added = (item: T) => this.addedOf(item) ?? -1;
     const compare: Record<CatalogSort, (a: T, b: T) => number> = {
       title: byTitle,
       year: (a, b) => year(b) - year(a) || byTitle(a, b),
       rating: (a, b) => rating(b) - rating(a) || byTitle(a, b),
+      added: (a, b) => added(b) - added(a) || this.idOrderOf(b) - this.idOrderOf(a) || byTitle(a, b),
     };
-    this.sorted = [...this.items()].sort(compare[this.sort]);
-    return this.sorted;
+    const result = [...this.items()].sort(compare[sort]);
+    if (sort === this.sort) this.sorted = result;
+    else this.sortedBy.set(sort, result);
+    return result;
   }
 
   private renderCategories(): void {
     const items = this.items();
     const favorites = items.reduce((n, item) => n + (this.deps.isFavorite(this.favoriteKey(item)) ? 1 : 0), 0);
+    const fresh = this.newCount();
+    this.shownNewCount = fresh;
     renderCategoryList(
       this.base.categories,
       [
         [ALL, this.config.text.all, items.length],
         [CONTINUE, '▶ Continue watching', this.continueWatching().length],
         [FAVORITES, '★ Favorites', favorites],
+        // Only once there's something new: without an Xtream account it takes a playlist refresh.
+        ...(fresh || this.category === NEW ? [[NEW, this.config.text.newCategory, fresh] as [string, string, number]] : []),
         ...groupEntries(this.counts),
       ],
       this.category,

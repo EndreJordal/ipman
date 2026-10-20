@@ -103,6 +103,9 @@ const ranOutGuideXml = (ranOut) => {
 /** Whether /ran-out-guide.xml serves the guide that ran out. */
 let guideRanOut = true;
 
+/** Movie ID → the fake panel's "added" (Unix seconds), for the recentlyAdded scenario. */
+let fakeAdded = null;
+
 /** Whether /flaky-guide.xml fails, like a provider whose guide is down. */
 let guideDown = false;
 
@@ -120,9 +123,9 @@ const mediaServer = http.createServer((req, res) => {
     const action = url.searchParams.get('action');
     if (ok && action === 'get_vod_streams') {
       return res.end(JSON.stringify([
-        { stream_id: 224555, rating: '7.447', added: '1760780040' },
-        { stream_id: 130303, rating: '6.2', added: '1700000000' },
-        { stream_id: 247855, rating: '0', added: '2147483647' },
+        { stream_id: 224555, rating: '7.447', added: fakeAdded?.[224555] ?? '1760780040' },
+        { stream_id: 130303, rating: '6.2', added: fakeAdded?.[130303] ?? '1700000000' },
+        { stream_id: 247855, rating: '0', added: fakeAdded?.[247855] ?? '2147483647' },
       ]));
     }
     if (ok && action === 'get_series_categories') {
@@ -395,6 +398,65 @@ const scenarios = {
     check('provider caught up, Retry: programmes shown', shows === 'Dagsrevyen,Nyhetene', shows);
     check('no page errors', !page.errors.length, page.errors.join('; '));
     guideRanOut = true;
+    await page.close();
+  },
+
+  async recentlyAdded(check) {
+    const titles = (page) => page.$$eval('.movie-card .movie-title', (ts) => ts.map((t) => t.textContent).join(','));
+    const categories = (page, section) => page.$$eval(`#${section}-categories .category`, (bs) => bs.map((b) => b.querySelector('.category-name').textContent + ' ' + b.querySelector('.category-count').textContent).join(' | '));
+    const reloadPlaylist = async (page) => {
+      await page.click('#settings-btn');
+      await page.click('#settings-dialog button[value="save"]');
+    };
+
+    // With Xtream: the provider's dates. Superman added 2 days ago, Habemus a year ago, Risto's date is bogus (2038).
+    const now = Math.floor(Date.now() / 1000);
+    fakeAdded = { 224555: String(now - 2 * 86400), 130303: String(now - 400 * 86400), 247855: '2147483647' };
+    playlists.set('/xtream.m3u', [
+      '#EXTM3U',
+      '#EXTINF:-1 group-title="Movies: Nordic 4K",4K-NC:Superman - 2025', `${MEDIA}/movie/testuser/testpass/224555.mkv`,
+      '#EXTINF:-1 group-title="Movies: Français",Habemus Papam (2011)', `${MEDIA}/movie/testuser/testpass/130303.mp4`,
+      '#EXTINF:-1 group-title="Movies: Finland",FI:Risto Räppääjä ja väärä Vincent - 2020', `${MEDIA}/movie/testuser/testpass/247855.mkv`,
+    ].join('\n'));
+    let page = await openApp(`${MEDIA}/get.php?username=testuser&password=testpass&type=m3u_plus`, 'movie');
+    await waitFor(page, () => document.querySelector('.movie-rating'), 15000);
+    await page.select('#movie-sort', 'added');
+    check('Xtream: recently added first, a date in the future ignored', (await titles(page)) === 'Superman,Habemus Papam,Risto Räppääjä ja väärä Vincent', await titles(page));
+    check('Xtream: "New this week" with the one added this week', (await categories(page, 'movie')).includes('✦ New this week 1'), await categories(page, 'movie'));
+    await page.click('#movie-categories [data-category="__new__"]');
+    check('New this week: only it, newest first, sort fixed', (await titles(page)) === 'Superman' && (await page.$eval('#movie-sort', (s) => s.disabled))
+      && (await page.$eval('#movie-heading', (h) => h.textContent)) === 'New this week', await titles(page));
+    await clickCard(page, '.movie-card');
+    await page.waitForSelector('#md-play', { visible: true });
+    const meta = await page.$eval('#md-meta', (m) => m.textContent);
+    check('dialog: when it was added', /Added[\w ,.]+ \d{4}File/.test(meta), meta);
+    check('no page errors', !page.errors.length, page.errors.join('; '));
+    await page.close();
+    fakeAdded = null;
+
+    // M3U only: no dates. The first time, everything counts as already there, ordered by ID.
+    const movie = (name, id) => ({ name, group: 'Movies: Test', url: `${MEDIA}/plain/movie/x/y/${id}.mkv` });
+    const url = playlist('recent', [movie('Alpha', 100), movie('Bravo', 300), movie('Charlie', 200)]);
+    page = await openApp(url, 'movie');
+    await page.select('#movie-sort', 'added');
+    check('M3U only, first time: by ID, highest first', (await titles(page)) === 'Bravo,Charlie,Alpha', await titles(page));
+    check('M3U only, first time: no "New this week"', !(await categories(page, 'movie')).includes('New this week'), await categories(page, 'movie'));
+    playlist('recent', [movie('Alpha', 100), movie('Bravo', 300), movie('Charlie', 200), movie('Delta', 50)]);
+    await reloadPlaylist(page);
+    check('M3U only, a movie appears: newest first though its ID is lowest', await waitFor(page, () => document.querySelector('.movie-card .movie-title')?.textContent === 'Delta', 10000), await titles(page));
+    check('M3U only, a movie appears: "New this week 1"', (await categories(page, 'movie')).includes('✦ New this week 1'), await categories(page, 'movie'));
+
+    // Series: one counts as updated when it gets more episodes.
+    const episode = (show, n) => ({ name: `${show} S01 E0${n}`, group: 'Series: Test', url: `${MEDIA}/plain/series/x/y/${show.length * 10 + n}.mkv` });
+    playlist('recent', [episode('Show A', 1), episode('Show Bee', 1)]);
+    await page.click('.section-btn[data-section="series"]');
+    await reloadPlaylist(page);
+    await page.waitForSelector('#series-grid .movie-card');
+    check('series, first time: nothing updated', !(await categories(page, 'series')).includes('Updated this week'), await categories(page, 'series'));
+    playlist('recent', [episode('Show A', 1), episode('Show A', 2), episode('Show Bee', 1)]);
+    await reloadPlaylist(page);
+    check('series with a new episode: "Updated this week 1"', await waitFor(page, () => /Updated this week1/.test(document.getElementById('series-categories').textContent), 10000), await categories(page, 'series'));
+    check('no page errors', !page.errors.length, page.errors.join('; '));
     await page.close();
   },
 

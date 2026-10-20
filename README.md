@@ -101,7 +101,7 @@ The dev server uses port 5174 so it can run next to an installed ipman on 5173. 
 - **TV:** a channel list with search, logos and favorites. It's virtualized, so large playlists stay fast.
   - Two dropdowns, country and category, built from `Country - Category` group names.
   - Collapsible, so the video can take the full width.
-- **MOVIES:** categories in the sidebar and a grid of poster cards, sortable by title, year or rating.
+- **MOVIES:** categories in the sidebar and a grid of poster cards, sortable by title, year, rating or recently added.
   - A details dialog with plot, genre, runtime, cast, trailer and TMDb links, and **Play Movie**.
   - A started movie gets a blue progress bar and **Resume** (or **Play from start**).
 - **SERIES:** the playlist's episodes grouped into series, as cards with their number of seasons and episodes.
@@ -109,6 +109,7 @@ The dev server uses port 5174 so it can run next to an installed ipman on 5173. 
   - The details dialog also lists every season's episodes: pick a season and start any episode.
   - While an episode plays, its seasons and episodes are listed under the player. Each episode has a blue bar for how much of it you've seen. The next episode starts by itself.
 - **Continue watching:** MOVIES and SERIES each list what you've started, most recent first.
+- **New this week** (MOVIES) and **Updated this week** (SERIES), and the matching "Recently added" / "Recently updated" sort. With an Xtream account these use the provider's dates: when a movie was added, and when a series last changed (usually a new episode). Without one, ipman notes when it first sees each movie or series in the playlist, and a series counts as updated when it gets more episodes. That starts from scratch: the first time, everything counts as already there, ordered by the provider's IDs (newer ones are higher on most servers).
 - **Xtream account** (optional, in settings): most providers' playlists come with an Xtream API, found automatically from the playlist URL. It adds ratings, covers, plots, cast and episode titles, and shows your subscription's expiry and connections.
 - **Playback**
   - HLS (`.m3u8`) through hls.js, or natively in Safari.

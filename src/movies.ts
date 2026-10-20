@@ -6,7 +6,7 @@
  * cards also show the rating (one request for the whole catalogue, cached for 12 hours), and
  * the dialog loads plot, genre, runtime, cast and a backdrop per movie.
  */
-import { CatalogView, cssUrl, formatClock, formatDuration, renderMeta, SummaryCache, tmdbImage, categoryLabel, type CatalogDeps } from './catalog';
+import { CatalogView, cssUrl, formatClock, formatDate, formatDuration, renderMeta, SummaryCache, tmdbImage, categoryLabel, type CatalogDeps } from './catalog';
 import type { Channel } from './lib/m3u';
 import { watchedFraction } from './lib/series';
 import { fetchVodDetails, fetchVodSummaries, movieId, type VodDetails, type VodSummary } from './lib/xtream';
@@ -50,6 +50,8 @@ export class MoviesView extends CatalogView<Channel> {
         noContinue: 'Nothing started yet. Movies you watch show up here.',
         none: 'This playlist has no movies.',
         search: 'Search movies',
+        newCategory: '✦ New this week',
+        noNew: 'No movies added in the last week.',
       },
       cardExtraHeight: 62,
     });
@@ -92,6 +94,19 @@ export class MoviesView extends CatalogView<Channel> {
   protected ratingOf(movie: Channel): number | null | undefined {
     const id = movieId(movie.url);
     return id ? this.summaries.get(id)?.rating : undefined;
+  }
+
+  protected providerDateOf(movie: Channel): number | null | undefined {
+    const id = movieId(movie.url);
+    return id ? this.summaries.get(id)?.added : undefined;
+  }
+
+  protected idOrderOf(movie: Channel): number {
+    return Number(movieId(movie.url)) || 0;
+  }
+
+  protected seenEntry(movie: Channel): [string, number] {
+    return [this.movieDeps.keyOf(movie), 0];
   }
 
   protected continueWatching(): Channel[] {
@@ -185,6 +200,8 @@ export class MoviesView extends CatalogView<Channel> {
     if (details?.cast) meta.push(['Cast', details.cast]);
     if (details?.country) meta.push(['Country', details.country]);
     meta.push(['Category', categoryLabel(movie.group)]);
+    const added = this.providerDateOf(movie);
+    if (added) meta.push(['Added', formatDate(added)]);
     const file = [details?.container || /\.(\w+)(?:\?|$)/.exec(movie.url)?.[1] || '', details?.bitrate ? `${(details.bitrate / 1000).toFixed(1)} Mbit/s` : '']
       .filter(Boolean)
       .join(' · ');
